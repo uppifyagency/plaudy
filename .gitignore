@@ -1,0 +1,40 @@
+# ── Rust / Tauri build artifacts (the 14 GB target/ must never be committed) ──
+target/
+**/target/
+handy/src-tauri/target/
+handy/src-tauri/gen/schemas/
+
+# ── Node / frontend build output ──
+node_modules/
+**/node_modules/
+dist/
+dist-ssr/
+**/dist/
+*.local
+*.local.*
+
+# ── Logs ──
+logs/
+*.log
+
+# ── OS / editor cruft ──
+.DS_Store
+**/.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.sw?
+*.suo
+
+# ── Local recordings / runtime junk that can appear in the tree ──
+recording_*
+
+# ── Secrets — never commit (defensive; none present today) ──
+.env
+.env.*
+*.pem
+id_rsa*
+
+# ── Stray model PROBE downloads loose in src-tauri/ (NOT the bundled models,
+#    which live under resources/models/diarization/ and ARE committed) ──
+/handy/src-tauri/*.onnx

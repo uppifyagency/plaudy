@@ -1,0 +1,8 @@
+[build]
+
+# Fase 2 diarization: sherpa-onnx (shared) ships libsherpa-onnx-c-api.dylib + libonnxruntime.dylib
+# next to the binary; this rpath lets the linked binary find them at runtime (otherwise dyld fails
+# with "Library not loaded: @rpath/libsherpa-onnx-c-api.dylib"). Verified by the link spike.
+# Harmless when the dylibs are absent — it is just an extra search path.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,@loader_path"]
