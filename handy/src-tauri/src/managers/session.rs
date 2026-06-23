@@ -41,6 +41,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
@@ -65,6 +66,48 @@ pub enum Source {
 pub struct SessionStateChanged {
     pub active: bool,
     pub source: Option<Source>,
+}
+
+/// Tap-immune loudness signal for seamless auto-capture's STOP decision. While a session holds the
+/// system-audio tap, the OS "is the output device running" property reads true *because of our own
+/// capture*, so it can't tell when the call goes quiet. Instead the system track's PCM writer marks
+/// the wall-clock of the last loud frame here; the supervisor finalizes once it has been idle long
+/// enough. Cheap (one RMS per 30 ms frame) and immune to our own tap.
+struct AudioActivity {
+    /// `None` until the first loud system-audio frame of the current session, then the wall-clock
+    /// of the most recent loud frame. Lets auto-capture tell a real session (heard audio) from a
+    /// false start (the OS "device running" sensor lies once our own tap is open).
+    last_loud: Mutex<Option<Instant>>,
+    started: Mutex<Instant>,
+}
+
+impl AudioActivity {
+    fn new() -> Self {
+        Self {
+            last_loud: Mutex::new(None),
+            started: Mutex::new(Instant::now()),
+        }
+    }
+    /// Reset at session start: no loud frame heard yet, stamp the start time.
+    fn begin(&self) {
+        *self.last_loud.lock().unwrap() = None;
+        *self.started.lock().unwrap() = Instant::now();
+    }
+    /// Mark "system audio heard now" (called by the system track's writer on a loud frame).
+    fn mark(&self) {
+        *self.last_loud.lock().unwrap() = Some(Instant::now());
+    }
+    /// True once any loud system-audio frame has been captured this session (probation gate).
+    fn heard_audio(&self) -> bool {
+        self.last_loud.lock().unwrap().is_some()
+    }
+    /// How long since the last loud frame; if none yet, since the session started.
+    fn idle(&self) -> Duration {
+        match *self.last_loud.lock().unwrap() {
+            Some(t) => t.elapsed(),
+            None => self.started.lock().unwrap().elapsed(),
+        }
+    }
 }
 
 /// The active capture backend. Both expose the same start/stop/close surface and
@@ -122,6 +165,8 @@ pub struct SessionManager {
     app: AppHandle,
     recordings_dir: PathBuf,
     active: Mutex<Option<ActiveSession>>,
+    /// Shared system-audio loudness clock; the auto-capture supervisor reads it to decide STOP.
+    activity: Arc<AudioActivity>,
 }
 
 impl SessionManager {
@@ -132,11 +177,24 @@ impl SessionManager {
             app: app.clone(),
             recordings_dir,
             active: Mutex::new(None),
+            activity: Arc::new(AudioActivity::new()),
         })
     }
 
     pub fn is_active(&self) -> bool {
         self.active.lock().unwrap().is_some()
+    }
+
+    /// How long the captured system audio has been silent — the auto-capture supervisor's
+    /// tap-immune STOP signal (the OS device sensor is useless once our own tap is open).
+    pub fn system_audio_idle(&self) -> Duration {
+        self.activity.idle()
+    }
+
+    /// Whether any real (loud) system audio has been captured in the current session — the
+    /// auto-capture supervisor's probation gate to discard false starts.
+    pub fn system_audio_heard(&self) -> bool {
+        self.activity.heard_audio()
     }
 
     /// Start if idle, stop if active. Returns whether a session is active afterwards.
@@ -174,9 +232,14 @@ impl SessionManager {
         let id = new_session_id();
         let wav_path = self.recordings_dir.join(format!("{id}.wav"));
 
+        // Fresh session: no real audio heard yet (probation starts now).
+        self.activity.begin();
         let mut tracks: Vec<Track> = Vec::new();
         for &source in sources {
-            match build_track(source, &id, &self.recordings_dir) {
+            // Only the system track drives the auto-capture STOP clock (it's the "other side"
+            // of the call going quiet that should end the recording, not the mic).
+            let activity = matches!(source, Source::SystemAudio).then(|| self.activity.clone());
+            match build_track(source, &id, &self.recordings_dir, activity) {
                 Ok(track) => {
                     info!(
                         "Session track started ({source:?}) → {}",
@@ -257,6 +320,41 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Stop capture and DISCARD the recording — no WAV, no history row. Used by seamless
+    /// auto-capture to abandon a *false start* (triggered by the OS sensor, but no real audio
+    /// arrived within probation) so it never pollutes History.
+    pub fn cancel(&self) -> Result<()> {
+        let session = self
+            .active
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| anyhow!("No active session"))?;
+        let ActiveSession { tracks, wav_path: _ } = session;
+
+        let _ = SessionStateChanged {
+            active: false,
+            source: None,
+        }
+        .emit(&self.app);
+
+        for Track {
+            mut recorder,
+            writer,
+            pcm_path,
+            source,
+        } in tracks
+        {
+            let _ = recorder.stop();
+            let _ = recorder.close();
+            drop(recorder);
+            let _ = writer.join();
+            let _ = fs::remove_file(&pcm_path);
+            info!("Auto-capture: discarded false-start {source:?} track ({})", pcm_path.display());
+        }
+        Ok(())
+    }
+
     /// Finalize any session whose process died mid-recording. Safe to call once at startup,
     /// after the history and transcription managers are in managed state. Each orphan PCM is
     /// recovered as its own single-track session (no cross-track merge across a crash).
@@ -313,11 +411,16 @@ fn source_suffix(source: Source) -> &'static str {
 
 /// Build + start one capture track: open the recorder for `source` and spawn its PCM writer.
 /// The recorder is started FIRST so a failure (e.g. denied permission) leaves no orphan file.
-fn build_track(source: Source, id: &str, dir: &Path) -> Result<Track> {
+fn build_track(
+    source: Source,
+    id: &str,
+    dir: &Path,
+    activity: Option<Arc<AudioActivity>>,
+) -> Result<Track> {
     let pcm_path = dir.join(format!("{id}.{}{PCM_SUFFIX}", source_suffix(source)));
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
     let recorder = build_recorder(source, tx)?;
-    let writer = spawn_pcm_writer(pcm_path.clone(), rx);
+    let writer = spawn_pcm_writer(pcm_path.clone(), rx, activity);
     Ok(Track {
         recorder,
         writer,
@@ -362,11 +465,25 @@ fn build_recorder(source: Source, tx: mpsc::Sender<Vec<f32>>) -> Result<ActiveRe
 
 /// Append captured frames to `pcm_path` as little-endian i16, flushing each frame
 /// so an abrupt kill loses at most one ~30 ms frame. Ends when the sink closes.
-fn spawn_pcm_writer(pcm_path: PathBuf, rx: mpsc::Receiver<Vec<f32>>) -> JoinHandle<Result<u64>> {
+fn spawn_pcm_writer(
+    pcm_path: PathBuf,
+    rx: mpsc::Receiver<Vec<f32>>,
+    activity: Option<Arc<AudioActivity>>,
+) -> JoinHandle<Result<u64>> {
+    /// RMS above this (on [-1,1] samples) counts as "audio playing" vs silence / noise floor.
+    const LOUD_RMS: f32 = 0.005;
     std::thread::spawn(move || -> Result<u64> {
         let mut out = BufWriter::new(File::create(&pcm_path)?);
         let mut written: u64 = 0;
         while let Ok(frame) = rx.recv() {
+            if let Some(act) = &activity {
+                if !frame.is_empty() {
+                    let sum_sq: f32 = frame.iter().map(|s| s * s).sum();
+                    if (sum_sq / frame.len() as f32).sqrt() > LOUD_RMS {
+                        act.mark();
+                    }
+                }
+            }
             for &s in &frame {
                 let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
                 out.write_all(&v.to_le_bytes())?;

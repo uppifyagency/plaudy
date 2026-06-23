@@ -17,6 +17,9 @@ pub enum TrayIconState {
     Idle,
     Recording,
     Transcribing,
+    /// A long-form session is capturing (mic / system / meeting). The menu-bar mark becomes an
+    /// ear so you can tell, at a glance, that it's listening to you. Dictation keeps `Recording`.
+    Listening,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -60,6 +63,11 @@ pub fn get_icon_path(theme: AppTheme, state: TrayIconState) -> &'static str {
         (AppTheme::Colored, TrayIconState::Idle) => "resources/handy.png",
         (AppTheme::Colored, TrayIconState::Recording) => "resources/recording.png",
         (AppTheme::Colored, TrayIconState::Transcribing) => "resources/transcribing.png",
+        // Listening (a session is capturing) — the ear glyph. macOS renders the tray as a template
+        // (alpha mask, auto light/dark), so one asset serves every theme.
+        (AppTheme::Dark, TrayIconState::Listening) => "resources/tray_listening.png",
+        (AppTheme::Light, TrayIconState::Listening) => "resources/tray_listening.png",
+        (AppTheme::Colored, TrayIconState::Listening) => "resources/tray_listening.png",
     }
 }
 
@@ -192,7 +200,7 @@ pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&
             .expect("failed to create session toggle item");
 
     let menu = match state {
-        TrayIconState::Recording | TrayIconState::Transcribing => {
+        TrayIconState::Recording | TrayIconState::Transcribing | TrayIconState::Listening => {
             let cancel_i = MenuItem::with_id(app, "cancel", &strings.cancel, true, None::<&str>)
                 .expect("failed to create cancel item");
             Menu::with_items(

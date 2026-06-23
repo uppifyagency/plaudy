@@ -353,6 +353,11 @@ pub struct AppSettings {
     pub selected_model: String,
     #[serde(default = "default_always_on_microphone")]
     pub always_on_microphone: bool,
+    /// Seamless auto-capture: when audio plays from the speakers, start a meeting session on its
+    /// own (opt-in; see managers/auto_capture.rs). The mic only ever joins a system-audio-triggered
+    /// session, never records on its own.
+    #[serde(default = "default_auto_capture_enabled")]
+    pub auto_capture_enabled: bool,
     #[serde(default)]
     pub selected_microphone: Option<String>,
     #[serde(default)]
@@ -437,6 +442,10 @@ fn default_model() -> String {
 }
 
 fn default_always_on_microphone() -> bool {
+    false
+}
+
+fn default_auto_capture_enabled() -> bool {
     false
 }
 
@@ -775,6 +784,7 @@ pub fn get_default_settings() -> AppSettings {
         update_checks_enabled: default_update_checks_enabled(),
         selected_model: "".to_string(),
         always_on_microphone: false,
+        auto_capture_enabled: false,
         selected_microphone: None,
         clamshell_microphone: None,
         selected_output_device: None,

@@ -169,6 +169,17 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(history_manager.clone());
     app_handle.manage(session_manager.clone());
 
+    // Seamless auto-capture: a background supervisor senses system-audio playback (tap-free) and
+    // auto-starts a meeting session, finalizing it when the speakers go quiet. Opt-in via the
+    // `auto_capture_enabled` setting. See managers/auto_capture.rs.
+    {
+        let app_for_auto = app_handle.clone();
+        let session_for_auto = session_manager.clone();
+        std::thread::spawn(move || {
+            managers::auto_capture::run_supervisor(app_for_auto, session_for_auto);
+        });
+    }
+
     // Self-healing on startup: first heal any row stuck in `transcribing` (a finalize that
     // died with a previous process), then re-finalize any orphan PCM whose process died
     // mid-recording. Order matters: heal the stale rows before recovery adds fresh ones.
@@ -314,8 +325,9 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         use tauri_specta::Event as _;
         let app_for_session = app_handle.clone();
         managers::session::SessionStateChanged::listen(app_handle, move |event| {
+            // A session active → the ear (it's listening to you); idle → the resting mark.
             let icon = if event.payload.active {
-                tray::TrayIconState::Recording
+                tray::TrayIconState::Listening
             } else {
                 tray::TrayIconState::Idle
             };
