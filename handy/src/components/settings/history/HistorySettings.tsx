@@ -363,6 +363,14 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
 
   const hasTranscription = entry.transcription_text.trim().length > 0;
   const hasSegments = segments.length > 0;
+  // A long-form session row is created in `transcribing` state before its (slow) transcript
+  // lands; the manual retry path also pulses. Both share the same "Transcribing…" affordance.
+  const transcribing = retrying || entry.status === "transcribing";
+  // The cast of the conversation, in first-seen order — shows "Me" + the diarized speakers
+  // of a meeting at a glance, so a session reads as a rich result, not just a wall of text.
+  const speakers = Array.from(
+    new Set(segments.map((s) => s.speaker_label).filter((l): l is string => !!l)),
+  );
 
   const handleLoadAudio = useCallback(
     () => getAudioUrl(entry.file_name),
@@ -459,24 +467,37 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
         </div>
       </div>
 
-      {hasSegments && !retrying ? (
+      {speakers.length > 0 && !transcribing && (
+        <div className="flex flex-wrap gap-1.5">
+          {speakers.map((s) => (
+            <span
+              key={s}
+              className="rounded-full bg-logo-primary/10 px-2 py-0.5 text-xs font-medium text-logo-primary/90"
+            >
+              {s}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {hasSegments && !transcribing ? (
         <SpeakerTimeline segments={segments} />
       ) : (
         <p
           className={`italic text-sm pb-2 ${
-            retrying
+            transcribing
               ? ""
               : hasTranscription
                 ? "text-text/90 select-text cursor-text whitespace-pre-wrap break-words"
                 : "text-text/40"
           }`}
           style={
-            retrying
+            transcribing
               ? { animation: "transcribe-pulse 3s ease-in-out infinite" }
               : undefined
           }
         >
-          {retrying && (
+          {transcribing && (
             <style>{`
             @keyframes transcribe-pulse {
               0%, 100% { color: color-mix(in srgb, var(--color-text) 40%, transparent); }
@@ -484,11 +505,13 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
             }
           `}</style>
           )}
-          {retrying
+          {transcribing
             ? t("settings.history.transcribing")
             : hasTranscription
               ? entry.transcription_text
-              : t("settings.history.transcriptionFailed")}
+              : entry.status === "failed"
+                ? t("settings.history.transcriptionFailed")
+                : t("settings.history.noSpeech")}
         </p>
       )}
 

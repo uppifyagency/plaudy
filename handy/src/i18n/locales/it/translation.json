@@ -6,10 +6,13 @@
     "unloadModel": "Rilascia modello",
     "model": "Modello",
     "quit": "Esci",
-    "cancel": "Annulla"
+    "cancel": "Annulla",
+    "startRecording": "Avvia registrazione",
+    "stopRecording": "Ferma registrazione"
   },
   "sidebar": {
     "general": "Generale",
+    "sessions": "Sessioni",
     "models": "Modelli",
     "advanced": "Avanzate",
     "postProcessing": "Post-Elaborazione",
@@ -418,6 +421,24 @@
         "createFirst": "Clicca 'Crea un nuovo prompt' qui sopra per creare il tuo primo prompt di post-elaborazione."
       }
     },
+    "sessions": {
+      "title": "Microfono + audio di sistema, trascritto sul dispositivo",
+      "description": "Cattura una registrazione lunga dal microfono o dall'audio di sistema di questo Mac. Viene trascritta e aggiunta alla Cronologia quando premi Stop.",
+      "sourceLabel": "Sorgente",
+      "sourceMic": "Microfono",
+      "sourceSystem": "Audio di sistema",
+      "start": "Avvia registrazione",
+      "stop": "Ferma registrazione",
+      "recording": "Registrazione in corso…",
+      "modeMeeting": "Riunione",
+      "modeMic": "Microfono",
+      "modeSystem": "Audio di sistema",
+      "tapToStart": "Tocca per registrare",
+      "capturingMeeting": "Sto catturando te + l'audio di sistema",
+      "capturingMic": "Sto catturando il microfono",
+      "capturingSystem": "Sto catturando l'audio di sistema",
+      "privacyNote": "Registra il tuo microfono e l'audio di questo Mac come due flussi, separati per interlocutore. Niente lascia mai il tuo Mac."
+    },
     "history": {
       "title": "Cronologia",
       "openFolder": "Apri la cartella delle registrazioni",
@@ -431,6 +452,7 @@
       "retranscribe": "Ri-trascrivere",
       "retranscribeError": "Impossibile ri-trascrivere. Riprova.",
       "transcribing": "Trascrizione in corso...",
+      "noSpeech": "Nessun parlato rilevato",
       "transcriptionFailed": "Trascrizione fallita. Puoi ri-trascrivere usando l'icona di ripetizione."
     },
     "debug": {

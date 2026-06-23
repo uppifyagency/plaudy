@@ -1,6 +1,6 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { Cog, FlaskConical, History, Info, Sparkles, Cpu } from "lucide-react";
+import { Cog, FlaskConical, History, Info, Sparkles, Cpu, Mic } from "lucide-react";
 import HandyTextLogo from "./icons/HandyTextLogo";
 import HandyHand from "./icons/HandyHand";
 import { useSettings } from "../hooks/useSettings";
@@ -8,6 +8,7 @@ import {
   GeneralSettings,
   AdvancedSettings,
   HistorySettings,
+  SessionsSettings,
   DebugSettings,
   AboutSettings,
   PostProcessingSettings,
@@ -36,6 +37,12 @@ export const SECTIONS_CONFIG = {
     labelKey: "sidebar.general",
     icon: HandyHand,
     component: GeneralSettings,
+    enabled: () => true,
+  },
+  sessions: {
+    labelKey: "sidebar.sessions",
+    icon: Mic,
+    component: SessionsSettings,
     enabled: () => true,
   },
   models: {

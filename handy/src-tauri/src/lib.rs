@@ -169,8 +169,12 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(history_manager.clone());
     app_handle.manage(session_manager.clone());
 
-    // Finalize any long-form session whose process died mid-recording. Runs after
-    // the history + transcription managers are managed (finalize depends on them).
+    // Self-healing on startup: first heal any row stuck in `transcribing` (a finalize that
+    // died with a previous process), then re-finalize any orphan PCM whose process died
+    // mid-recording. Order matters: heal the stale rows before recovery adds fresh ones.
+    if let Err(e) = history_manager.fail_stale_transcribing() {
+        log::warn!("Failed to heal stale transcribing sessions: {e}");
+    }
     session_manager.recover_interrupted();
 
     // Note: Shortcuts are NOT initialized here.
@@ -225,6 +229,23 @@ fn initialize_core_logic(app_handle: &AppHandle) {
             }
             "copy_last_transcript" => {
                 tray::copy_last_transcript(app);
+            }
+            "toggle_session" => {
+                // The menu-bar "graffetta": one click captures both sides of a conversation —
+                // the mic and the Mac's system audio as two streams that finalize into one
+                // speaker-attributed transcript. System audio is best-effort (recorded only when
+                // available), so this stays seamless when nothing is playing. Run off the menu
+                // thread — start opens audio devices and stop joins writers + spawns finalize,
+                // neither of which should block the UI. The tray icon refreshes via the
+                // SessionStateChanged listener, so this arm stays a thin trigger.
+                let app2 = app.clone();
+                std::thread::spawn(move || {
+                    let sources = [Source::Mic, Source::SystemAudio];
+                    match app2.state::<Arc<SessionManager>>().toggle_sources(&sources) {
+                        Ok(active) => log::info!("Session toggled via tray; active = {active}"),
+                        Err(e) => log::error!("Failed to toggle session via tray: {e}"),
+                    }
+                });
             }
             "unload_model" => {
                 let transcription_manager = app.state::<Arc<TranscriptionManager>>();
@@ -285,6 +306,22 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.listen("model-state-changed", move |_| {
         tray::update_tray_menu(&app_handle_for_listener, &tray::TrayIconState::Idle, None);
     });
+
+    // Keep the tray icon + menu in sync with long-form session state, however it was toggled
+    // (tray, CLI, or the Sessions panel). SessionStateChanged is the single source of truth, so
+    // the menu-bar "graffetta" always reads correctly without each trigger touching the tray.
+    {
+        use tauri_specta::Event as _;
+        let app_for_session = app_handle.clone();
+        managers::session::SessionStateChanged::listen(app_handle, move |event| {
+            let icon = if event.payload.active {
+                tray::TrayIconState::Recording
+            } else {
+                tray::TrayIconState::Idle
+            };
+            tray::change_tray_icon(&app_for_session, icon);
+        });
+    }
 
     // Get the autostart manager and configure based on user setting
     let autostart_manager = app_handle.autolaunch();
@@ -426,6 +463,7 @@ pub fn run(cli_args: CliArgs) {
             commands::audio::get_clamshell_microphone,
             commands::audio::is_recording,
             commands::session::start_session,
+            commands::session::start_meeting,
             commands::session::stop_session,
             commands::session::is_session_active,
             commands::transcription::set_model_unload_timeout,
@@ -441,7 +479,10 @@ pub fn run(cli_args: CliArgs) {
             commands::history::update_recording_retention_period,
             helpers::clamshell::is_laptop,
         ])
-        .events(collect_events![managers::history::HistoryUpdatePayload,]);
+        .events(collect_events![
+            managers::history::HistoryUpdatePayload,
+            managers::session::SessionStateChanged,
+        ]);
 
     // Export TS bindings in debug builds only. This is a dev convenience: a failure must
     // NOT crash the binary. In particular the CLI signal-forwarder (e.g.
@@ -516,6 +557,12 @@ pub fn run(cli_args: CliArgs) {
                 match app.state::<Arc<SessionManager>>().toggle(Source::SystemAudio) {
                     Ok(active) => log::info!("System-audio session toggled; active = {active}"),
                     Err(e) => log::error!("Failed to toggle system-audio session: {e}"),
+                }
+            } else if args.iter().any(|a| a == "--toggle-meeting") {
+                let sources = [Source::Mic, Source::SystemAudio];
+                match app.state::<Arc<SessionManager>>().toggle_sources(&sources) {
+                    Ok(active) => log::info!("Meeting session toggled; active = {active}"),
+                    Err(e) => log::error!("Failed to toggle meeting session: {e}"),
                 }
             } else {
                 show_main_window(app);

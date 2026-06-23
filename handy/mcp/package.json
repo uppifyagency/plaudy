@@ -1,0 +1,11 @@
+{
+  "name": "plaude-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local, dependency-free MCP server exposing Plaude Local recordings to Claude (read-only over history.db).",
+  "scripts": {
+    "start": "bun run server.ts",
+    "test": "bun test"
+  }
+}

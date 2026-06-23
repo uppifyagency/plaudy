@@ -6,10 +6,13 @@
     "unloadModel": "Unload Model",
     "model": "Model",
     "quit": "Quit",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "startRecording": "Start Recording",
+    "stopRecording": "Stop Recording"
   },
   "sidebar": {
     "general": "General",
+    "sessions": "Sessions",
     "models": "Models",
     "advanced": "Advanced",
     "postProcessing": "Post Process",
@@ -418,6 +421,24 @@
         "createFirst": "Click 'Create New Prompt' above to create your first post-processing prompt."
       }
     },
+    "sessions": {
+      "title": "Mic + system audio, transcribed on-device",
+      "description": "Capture a long-form recording from your microphone or this Mac's system audio. It is transcribed and added to your History when you stop.",
+      "sourceLabel": "Source",
+      "sourceMic": "Microphone",
+      "sourceSystem": "System audio",
+      "start": "Start recording",
+      "stop": "Stop recording",
+      "recording": "Recording…",
+      "modeMeeting": "Meeting",
+      "modeMic": "Microphone",
+      "modeSystem": "System audio",
+      "tapToStart": "Tap to record",
+      "capturingMeeting": "Capturing you + system audio",
+      "capturingMic": "Capturing microphone",
+      "capturingSystem": "Capturing system audio",
+      "privacyNote": "Records your microphone and this Mac's audio as two streams, separated by speaker. Nothing ever leaves your Mac."
+    },
     "history": {
       "title": "History",
       "openFolder": "Open Recordings Folder",
@@ -432,6 +453,7 @@
       "retranscribeError": "Failed to re-transcribe. Please try again.",
       "transcribing": "Transcribing...",
       "transcriptionFailed": "Transcription failed. You can re-transcribe using the retry icon.",
+      "noSpeech": "No speech detected",
       "unknownSpeaker": "Unknown"
     },
     "debug": {

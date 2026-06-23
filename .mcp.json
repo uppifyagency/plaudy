@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "plaude-local": {
+      "command": "bun",
+      "args": ["run", "handy/mcp/server.ts"],
+      "env": {}
+    }
+  }
+}

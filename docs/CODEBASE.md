@@ -1,8 +1,8 @@
 # Plaude Local — Codebase Documentation
 
-The complete technical reference for the project: the architecture, **what we built and how**, a file‑by‑file map of our changes, the data model, the build system, and what remains. If you are the incoming developer, read this top to bottom once, then keep [HANDOFF-FASE2.md](HANDOFF-FASE2.md) open for line‑cited detail.
+The complete technical reference for the project: the architecture, **what we built and how**, a file‑by‑file map of our changes, the data model, the build system, and what remains. If you are the incoming developer, read this top to bottom once, then keep [HANDOFF.md](HANDOFF.md) (entry‑point) and [HANDOFF-FASE2.md](HANDOFF-FASE2.md) (line‑cited Fase 2 forensics) open alongside.
 
-> **Mental model in one sentence:** we took Handy's short‑dictation pipeline (`capture → VAD → transcribe → paste`) and added a *second* path for **long‑form recording** that taps the same capture seam, streams hours of audio to disk, and on stop runs an offline **transcribe + diarize ("who said what")** pass before writing a speaker‑labelled transcript to History.
+> **Mental model in one sentence:** we took Handy's short‑dictation pipeline (`capture → VAD → transcribe → paste`) and added a *second* path for **long‑form recording** that taps the same capture seam, streams hours of audio to disk, and on stop runs an offline **transcribe + diarize ("who said what")** pass — extended to **capture the mic and the Mac's system audio simultaneously** (a meeting), merge them into one speaker‑attributed transcript, and expose the whole library to **Claude over a local MCP server** so nothing ever leaves the Mac.
 
 ---
 
@@ -19,6 +19,7 @@ The complete technical reference for the project: the architecture, **what we bu
 | VAD | Silero VAD (`silero_vad_v4.onnx`) |
 | Audio I/O | `cpal` (mic), **CoreAudio Process Tap** (system audio, macOS), `rubato` (resample) |
 | Persistence | **SQLite** (`rusqlite` + `rusqlite_migration`), `history.db` |
+| Claude bridge | **local MCP server** (`handy/mcp/`, Bun + `bun:sqlite`, read‑only, stdio) |
 
 ---
 
@@ -30,14 +31,15 @@ Core logic lives in **managers** constructed at startup and held in Tauri manage
 - `AudioRecordingManager` — device + recording lifecycle for dictation.
 - `ModelManager` ([managers/model.rs](../handy/src-tauri/src/managers/model.rs)) — model catalog, download/verify/extract, **bundled‑model install**.
 - `TranscriptionManager` ([managers/transcription.rs](../handy/src-tauri/src/managers/transcription.rs)) — single resident ASR model, idle‑unload watcher.
-- `HistoryManager` ([managers/history.rs](../handy/src-tauri/src/managers/history.rs)) — `history.db`, including the Fase 2 segments/speakers overlay.
-- `SessionManager` ([managers/session.rs](../handy/src-tauri/src/managers/session.rs)) — **our** long‑form recording lifecycle.
+- `HistoryManager` ([managers/history.rs](../handy/src-tauri/src/managers/history.rs)) — `history.db`, including the segments/speakers overlay and the per‑row transcript status.
+- `SessionManager` ([managers/session.rs](../handy/src-tauri/src/managers/session.rs)) — **our** long‑form + dual‑stream recording lifecycle.
 
-Frontend → backend via **commands** (`commands/*.rs`); backend → frontend via **events** (e.g. `historyUpdatePayload`, `model-download-progress`). All typed through `tauri-specta` into [src/bindings.ts](../handy/src/bindings.ts).
+Frontend → backend via **commands** (`commands/*.rs`); backend → frontend via **events** (`historyUpdatePayload`, `session-state-changed`, `model-download-progress`, …). All typed through `tauri-specta` into [src/bindings.ts](../handy/src/bindings.ts). **Claude** → backend data via the local MCP server, which reads `history.db` directly (read‑only, no app required).
 
-### The two pipelines
+### The pipelines
 - **Dictation (upstream):** `capture → VAD gate → resample → transcribe → post‑process → paste + history`. Short, latency‑sensitive.
 - **Long‑form session (ours):** `capture → faithful tap → stream to disk → (stop) → WAV → diarize + transcribe → speaker‑labelled history`. Multi‑hour, throughput‑oriented.
+- **Meeting (dual‑stream, ours):** the long‑form path with **two tracks at once** — mic + system audio — mixed into one playable WAV and **merged into one chronological "who said what" transcript** (mic = "Me", system = diarized remote speakers).
 
 ---
 
@@ -46,22 +48,20 @@ Frontend → backend via **commands** (`commands/*.rs`); backend → frontend vi
 Both pipelines, and both audio sources, feed **one** consumer through a `chunk_sink`:
 
 - `AudioRecorder::with_chunk_sink(sink)` ([recorder.rs](../handy/src-tauri/src/audio_toolkit/audio/recorder.rs)) installs a faithful tap.
-- In `handle_frame`, **if a `chunk_sink` is present every frame is forwarded verbatim and the function early‑returns before the VAD/dictation accumulator** — this is the bounded‑RAM fix that makes multi‑hour capture possible (the dictation accumulator would otherwise grow without bound).
-- Frames flow as `AudioChunk::Samples(Vec<f32>)`; the producer signals end with a single `AudioChunk::EndOfStream`.
+- In `handle_frame`, **if a `chunk_sink` is present every frame is forwarded verbatim and the function early‑returns before the VAD/dictation accumulator** — the bounded‑RAM fix that makes multi‑hour capture possible.
+- Both the cpal mic callback and the CoreAudio system IOProc run through the **same** `run_consumer` (in `recorder.rs`), which resamples to **16 kHz mono** before the sink — so every track, from either source, is already 16 kHz mono f32 by the time it hits disk. (This is why mixing two tracks is trivial — see §5a.)
 
-**Consequence:** system‑audio capture did *not* need a parallel pipeline. The CoreAudio IOProc downmixes to mono `f32` and pushes into the *same* channel the cpal mic callback uses. `session.rs` picks the producer behind an `ActiveRecorder { Mic | System }` enum; the PCM→WAV→transcribe→history *tail* is shared.
+**Consequence:** system‑audio capture did *not* need a parallel pipeline, and dual capture is just *two recorders feeding two sinks*. A session is now a `Vec<Track>`, each `Track` wrapping one `ActiveRecorder { Mic | System }`; the PCM→WAV→transcribe→history *tail* is shared and source‑agnostic.
 
 ---
 
-## 4. Fase 0 — long‑form mic sessions
+## 4. Fase 0 — long‑form sessions
 
 **File:** [managers/session.rs](../handy/src-tauri/src/managers/session.rs).
 
 - `SessionManager` holds `app`, `recordings_dir`, `active: Mutex<Option<ActiveSession>>`.
-- Lifecycle: `toggle(source)` → `start(source)` / `stop()`, plus `recover_interrupted()` at boot.
 - Capture is **un‑VAD‑gated** (every frame incl. silence), streamed to disk as **raw little‑endian i16 PCM** (`*.session.pcm`), flushed per frame so a crash loses <30 ms.
-- On stop, `finalize()` runs **off‑thread**: read PCM→f32 (`chunks_exact(2)` so a torn trailing byte is dropped, not panicked) → write a mono **16 kHz WAV** → best‑effort transcribe **only if a model is resident** → write one History row → delete the PCM.
-- **Crash recovery:** `recover_interrupted()` finalizes any orphan `*.session.pcm` at startup (before models load), so a recovered session keeps its audio (empty transcript, by design).
+- **Crash recovery:** `recover_interrupted()` finalizes any orphan `*.session.pcm` at startup (before models load) as its own single‑track session, so a recovered session keeps its audio (empty transcript, by design). It infers the source from the `.mic.`/`.system.` infix in the filename.
 - **Path‑collision safety:** session ids are `session-{millis}-{seq}` (`AtomicU64`), so two sessions in the same millisecond can't clobber each other.
 
 ---
@@ -72,122 +72,179 @@ Both pipelines, and both audio sources, feed **one** consumer through a `chunk_s
 
 `SystemAudioRecorder` captures everything the Mac plays via the CoreAudio **Process Tap** API (macOS 14.4+):
 
-- Global mono `CATapDescription` → `AudioHardwareCreateProcessTap` → a private **aggregate device** → a realtime **IOProc block** that downmixes f32 to mono and pushes `AudioChunk::Samples` into the shared `chunk_sink`.
+- Global mono `CATapDescription` → `AudioHardwareCreateProcessTap` → a private **aggregate device** → a realtime **IOProc block** that downmixes f32 to mono and pushes `AudioChunk::Samples` into the shared `run_consumer` (which resamples to 16 kHz).
 - Uses the **Audio‑Recording TCC permission** (`NSAudioCaptureUsageDescription`), *not* Screen Recording — so **no purple banner**.
-- Hardening present in code: format validation (asserts LinearPCM/float/32‑bit before casting the buffer), the **`EndOfStream`‑once** emission on stop (mirrors the cpal callback so the consumer's drain doesn't fall back to a 2 s timeout and truncate the tail), and an immediate `drop(block)` after `AudioDeviceCreateIOProcIDWithBlock` so the recorder is `Send` (required to live in Tauri state).
-
-objc2 deps for this live under the macOS‑aarch64 target block in `Cargo.toml`.
+- Hardening: format validation, the **`EndOfStream`‑once** emission on stop (so the consumer's drain doesn't fall back to a 2 s timeout and truncate the tail), and an immediate `drop(block)` so the recorder is `Send`.
 
 ---
 
-## 6. Fase 2 — speaker diarization ("who said what")
+## 5a. Fase 3 — dual‑stream "meeting" capture + the menu‑bar "graffetta"
 
-This is the bulk of our work. Four pieces, built **domain‑first** (pure logic tested in isolation, then adapters around it).
+The product thesis: one click captures **both sides of a conversation** — the mic (you) and the Mac's system audio (the call) — and they land as a single speaker‑attributed transcript.
 
-### 6.1 Pure core — `align()` ([managers/diarization.rs](../handy/src-tauri/src/managers/diarization.rs))
-Types `SpeakerTurn`, `AsrSegment`, `TimedSegment` + `align(asr, turns)`: assign each ASR segment the speaker whose turn overlaps it **most** (deterministic tie‑break to the lower speaker id; no overlap → `speaker_id: None` = graceful "unknown"). No I/O, no engine — **6 unit tests**.
+### Tracks, start, stop ([session.rs](../handy/src-tauri/src/managers/session.rs))
+- A session is **`ActiveSession { tracks: Vec<Track>, wav_path }`**. Each `Track` = `{ recorder: ActiveRecorder, writer: JoinHandle, pcm_path, source }`. A solo track behaves exactly as Fase 0/1; two tracks are the meeting.
+- **`start_sources(&[Source])`** is **best‑effort multi‑source**: it builds a track per source via `build_track` (recorder started *first*, so a failed start leaves no orphan file), skips any source that fails (system‑audio permission denied, nothing playing, unsupported target) with a warning, and errors **only if no track started**. This is the "seamless / self‑healing" capture — one click records the mic, and the system audio too whenever available.
+  - **Deadlock‑safety (learned the hard way):** `start_sources` `drop(guard)`s the `active` mutex **before** emitting `SessionStateChanged`. The tray listener (lib.rs) runs *inline on the same thread* and calls `is_active()`, which re‑locks the non‑reentrant `std::sync::Mutex`; emitting under the held guard deadlocks the start path. `stop()` is naturally safe (it `.take()`s into a temporary). A review caught this — the unit tests don't traverse the emit→listener path, so it stayed green while the live app would hang. **Always drop the lock before emitting an event whose listener may re‑enter the manager.**
+- **`toggle_sources`** / `toggle`/`start` are thin wrappers; the menu‑bar action passes `[Mic, SystemAudio]`.
+- **`stop()`** tears down every track (drain → join writer → collect `(pcm_path, source)`), emits `active:false` immediately for UI snappiness, then spawns `finalize_session` off‑thread.
+- Per‑track PCM naming: `session-{id}.mic.session.pcm` / `…system.session.pcm` (`source_suffix`), so recovery can tell sources apart. The session's single output is `session-{id}.wav`.
+
+### Mixing + finalize
+- **`mix_tracks(&[&[f32]])`** sums the equal‑rate mono tracks **by reference** (never cloning multi‑hour buffers), pads shorter tracks with silence, and clamps to `[-1,1]` → one playable 16 kHz WAV (you hear the whole meeting). *(Plain sum+clamp; a soft limiter is the named upgrade path.)*
+- **`finalize_session`** is a **cleanup guard** around `finalize_session_inner`: it **always** deletes the source PCMs afterward (success, discard, or error) so a deterministic failure can never make `recover_interrupted` re‑finalize the same files (and re‑insert a row) every startup.
+- `finalize_session_inner`: decode each PCM → if all empty, discard → mix + `save_wav_file` → **create a pending history row immediately** (`save_pending_entry`, status `transcribing`) so the session shows in History the instant you stop → if a model is resident, transcribe each track: **single track → diarize + `align`; dual → mic labelled `"Me"`, system diarized** → `merge_segments` interleaves them chronologically → **`drop_bleed`** removes the mic's echo of the system audio (speaker bleed, §6.1) → `save_segments` + `update_transcription` flips status to `done`/`failed` (the flat transcript is rebuilt from the de‑duped segments, so the bleed copy is gone from it too). A per‑track transcription error is graceful (partial transcript, still `done`); only an all‑failed session becomes `failed`.
+
+### The "graffetta" (menu‑bar) ([tray.rs](../handy/src-tauri/src/tray.rs), [lib.rs](../handy/src-tauri/src/lib.rs))
+- The tray menu has a **`toggle_session`** item whose label flips between `startRecording`/`stopRecording` based on `SessionManager::is_active()`; present in both the Idle and Recording menus.
+- Its handler spawns a thread and calls `toggle_sources([Mic, SystemAudio])` — the one‑click meeting capture.
+- A **`SessionStateChanged::listen`** in `lib.rs` keeps the tray icon (Idle/Recording) in sync however a session is toggled — tray, CLI, or the Sessions panel — making session state single‑sourced.
+
+---
+
+## 6. Fase 2 — speaker diarization + the dual‑stream merge ("who said what")
+
+Built **domain‑first** (pure logic tested in isolation, then adapters around it).
+
+### 6.1 Pure core — `diarization.rs`
+Types `SpeakerTurn`, `AsrSegment`, `TimedSegment` + three pure functions ([managers/diarization.rs](../handy/src-tauri/src/managers/diarization.rs)):
+- **`align(asr, turns)`** — assign each ASR segment the speaker whose turn overlaps it **most** (deterministic tie‑break to the lower id; no overlap → `speaker_id: None` = graceful "unknown"). Produces `TimedSegment` with `speaker_label: None`.
+- **`label_segments(asr, label)`** — tag every segment of a track with a fixed name (the mic track of a meeting is all `"Me"`); `speaker_id` left `None` so the name is authoritative.
+- **`merge_segments(tracks)`** — flatten N tracks and **stable‑sort by `start_ms`** → one chronological timeline. Equal‑timestamp ties keep track order (mic before system). This is how a meeting becomes a single "who said what across both sides" transcript.
+- **`drop_bleed(segments, mic_label)`** — removes **acoustic‑bleed duplicates**: when a meeting plays through the **speakers** (no headphones), the mic re‑captures the system audio, so one person appears as both `"Me"` and a diarized speaker. A `"Me"` segment whose time overlaps another speaker's segment with ≥70% word overlap is that echo and is dropped; genuinely distinct mic speech (you actually talking) is kept. *(The real fix is acoustic echo cancellation on the mic input — the named upgrade path; this is the cheap, no‑DSP mitigation. This is purely ours — riffado has no capture, no dual‑stream, hence no analogue.)*
+- `TimedSegment` now carries `speaker_label: Option<String>` which, when `Some`, overrides the diarizer‑index→"Speaker N" generation at persist time.
+- **Unit‑tested** in isolation (overlap/tie‑break/unknown for `align`; labelling, chronological interleave, stable‑tie, empty for the merge; echo‑drop / keep‑distinct / time‑gated for `drop_bleed`).
 
 ### 6.2 Engine adapter — `DiarizationManager`
-Wraps `sherpa_onnx::OfflineSpeakerDiarization` (cfg‑gated like the system recorder). Loads `segmentation.onnx` (pyannote‑3.0) + `embedding.onnx` (NeMo TitaNet‑small) from `<app_data>/models/diarization/` and runs an offline pass over the 16 kHz mono samples → `Vec<SpeakerTurn>` (ms).
-
-- **Safe‑by‑default:** `diarize()` no‑ops unless both model files exist, so the default install behaves exactly as before and sherpa's onnxruntime is only ever initialized when diarization actually runs.
-- The shared consts `DiarizationManager::{SUBDIR, SEG_FILE, EMB_FILE}` are the **single source of truth** for filenames — the downloader, the bundled‑install, and the engine all reference them so they cannot drift (guarded by a unit test).
+Wraps `sherpa_onnx::OfflineSpeakerDiarization` (cfg‑gated). Loads `segmentation.onnx` (pyannote‑3.0) + `embedding.onnx` (NeMo TitaNet‑small) from `<app_data>/models/diarization/` → `Vec<SpeakerTurn>` (ms).
+- **Safe‑by‑default:** `diarize()` no‑ops unless both model files exist.
+- `DiarizationManager::{SUBDIR, SEG_FILE, EMB_FILE}` are the **single source of truth** for filenames (downloader, bundled‑install, engine all reference them; guarded by a test).
 
 ### 6.3 ASR with timings — `transcribe_with_segments` ([transcription.rs](../handy/src-tauri/src/managers/transcription.rs))
-`TranscriptionManager::transcribe()` throws ASR segments away. Rather than duplicate ~290 lines, the body was refactored into a private `transcribe_inner` returning `(String, Vec<AsrSegment>)`; `transcribe` and `transcribe_with_segments` are one‑line wrappers (the delicate `catch_unwind`/engine block is untouched). `to_asr_segments` converts transcribe‑rs seconds → ms at that single boundary.
+`transcribe_inner` returns `(String, Vec<AsrSegment>)`; `transcribe` and `transcribe_with_segments` are one‑line wrappers. `to_asr_segments` converts transcribe‑rs seconds → ms at that single boundary.
 
-### 6.4 Finalize wiring ([session.rs](../handy/src-tauri/src/managers/session.rs))
-Gated on `tm.is_model_loaded()`, `finalize` now: **diarize first** (borrows `samples`) **then** `transcribe_with_segments` (consumes them — avoids cloning a multi‑hour buffer) → `align` → `save_entry` (flat canonical transcript) **+** `save_segments` (speakers + segments). If ASR yields no segments it skips the overlay; startup recovery (no model) skips the whole pass. **78→79 lib tests green.**
+### 6.4 Read side + UI
+- `get_session_segments(history_id) -> Vec<PersistedSegment>` ([commands/history.rs](../handy/src-tauri/src/commands/history.rs)).
+- `SpeakerTimeline` + **speaker chips** in [HistorySettings.tsx](../handy/src/components/settings/history/HistorySettings.tsx) (see §9).
 
-### 6.5 Read side + UI
-- `get_session_segments(history_id) -> Vec<PersistedSegment>` ([commands/history.rs](../handy/src-tauri/src/commands/history.rs)), registered in `collect_commands!`.
-- `SpeakerTimeline` in [HistorySettings.tsx](../handy/src/components/settings/history/HistorySettings.tsx) renders `Speaker N · mm:ss · text` per segment when an entry has segments, else the existing flat `<p>` (canonical `transcription_text` preserved).
+### 6.5 Models: download **and** bundle
+- **Auto‑download:** `ModelManager::download_diarization_models()` fetches the two bare `.onnx` files, SHA256‑pinned. Commands `download_diarization_models` + `is_diarization_available`.
+- **Bundled + auto‑install:** committed under `resources/models/diarization/`; `migrate_bundled_diarization_models()` copies them on first run → **clone → build → run → diarization works offline**.
 
-### 6.6 Models: download **and** bundle
-- **Auto‑download:** `ModelManager::download_diarization_models()` ([model.rs](../handy/src-tauri/src/managers/model.rs)) fetches the two **bare `.onnx`** files (HuggingFace mirror for segmentation, k2‑fsa GitHub release for embedding), SHA256‑pinned, into `<app_data>/models/diarization/`. Bare files mean the existing file‑based download/verify path is reused — **no `.tar.bz2`/bzip2 branch, no entry in the ASR catalog, no `EngineType::Diarizer`**. Exposed as commands `download_diarization_models` + `is_diarization_available`.
-- **Bundled + auto‑install (for fresh clones):** the models are committed under `handy/src-tauri/resources/models/diarization/` (covered by `bundle.resources = ["resources/**/*"]`). `ModelManager::migrate_bundled_diarization_models()` copies them into `<app_data>/models/diarization/` on first run (mirrors `migrate_bundled_models`). So **clone → build → run → diarization works offline**, no download.
-
-> **Why diarization is a *separate* slot, not the ASR model slot:** `TranscriptionManager` keeps exactly one resident ASR model with an idle‑unload watcher. Loading a diarizer into that slot would evict the user's ASR model and thrash the watchers. `DiarizationManager` has its own lifecycle; in `finalize` we diarize then transcribe sequentially.
-
-> **The dual‑onnxruntime question (now closed):** `ort` (ASR) static‑links onnxruntime; sherpa would too in `static` mode → duplicate‑symbol link error. The fix is `sherpa-onnx { default-features = false, features = ["shared"] }` (dylib) + an `@loader_path` rpath in `.cargo/config.toml`. Two runtimes co‑loading *and initialized at once* was the last unknown — **live‑validated across 5 finalizes with zero crashes** (2026‑06‑22).
+> **Dual‑onnxruntime (closed):** `ort` (ASR) static‑links onnxruntime; sherpa uses `features = ["shared"]` (dylib) + `@loader_path` rpath to avoid the duplicate‑symbol clash. Two runtimes co‑loading was live‑validated with zero crashes.
 
 ---
 
 ## 7. Data model — `history.db`
 
-Migrations live in [history.rs](../handy/src-tauri/src/managers/history.rs) as an append‑only `MIGRATIONS` list (tracked by SQLite's `user_version`; **never edit a shipped migration**). Migration **#5** (ours) adds the diarization overlay:
+Migrations live in [history.rs](../handy/src-tauri/src/managers/history.rs) as an append‑only `MIGRATIONS` list (tracked by `user_version`; **never edit a shipped migration**).
+
+- **#1** base `transcription_history`; **#2–#4** post‑process columns; **#5** the diarization overlay (`speakers` + `transcription_segments` + index); **#6** the per‑row transcript **`status`** column.
 
 ```sql
+-- transcription_history (after migration #6)
+id, file_name, timestamp, saved, title, transcription_text,
+post_processed_text, post_process_prompt, post_process_requested,
+status TEXT NOT NULL DEFAULT 'done'      -- 'transcribing' | 'done' | 'failed'
+
 CREATE TABLE speakers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   history_id INTEGER NOT NULL REFERENCES transcription_history(id) ON DELETE CASCADE,
-  label TEXT NOT NULL,            -- "Speaker N", 1‑based, first‑seen order, per history row
+  label TEXT NOT NULL,            -- "Me" (mic) or "Speaker N" (diarized), per history row
   embedding BLOB
 );
 CREATE TABLE transcription_segments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   history_id INTEGER NOT NULL REFERENCES transcription_history(id) ON DELETE CASCADE,
-  start_ms INTEGER NOT NULL,
-  end_ms INTEGER NOT NULL,
-  speaker_id INTEGER REFERENCES speakers(id) ON DELETE SET NULL,   -- NULL = unknown speaker
-  text TEXT NOT NULL,
-  confidence REAL
+  speaker_id INTEGER REFERENCES speakers(id) ON DELETE SET NULL,   -- NULL = unknown
+  start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL,
+  text TEXT NOT NULL, confidence REAL
 );
 CREATE INDEX idx_segments_history ON transcription_segments(history_id);
 ```
 
-- The flat `transcription_history.transcription_text` stays the **canonical** full transcript (copy/retry keep working); segments are a structured **overlay**.
-- `ON DELETE CASCADE` requires `PRAGMA foreign_keys = ON` **per connection** — `get_connection` now sets it (cascade verified by a test), so pruning a history row removes its segments/speakers.
-- Persistence: `write_segments`/`read_segments` are free functions over `&Connection` (in‑memory testable); `save_segments`/`get_segments` are the manager API; `PersistedSegment` is the bindings‑ready read shape.
+- **`TranscriptionStatus`** (`transcribing`/`done`/`failed`, serde `lowercase`, `specta::Type`) flows through `HistoryEntry.status` to the UI. The one‑shot dictation path and every pre‑existing row are `done` via the column default (no code change). Long‑form sessions move `transcribing → done/failed`, filling the silent gap between Stop and the finished row.
+- **`save_pending_entry` / `save_entry`** share a private `insert_entry`; **`update_transcription`** now also sets `status`. Both emit `HistoryUpdatePayload` (`added`/`updated`).
+- **`write_segments`** uses **two independent speaker namespaces** sharing the `speakers` table: explicit `speaker_label` (e.g. `"Me"`) deduped by string, and diarizer indices deduped by id → `"Speaker N"` in first‑seen order. They number independently, so "Me" never shifts the remote "Speaker 1/2…" sequence.
+- **`fail_stale_transcribing()`** (startup self‑healing): flips any row still `transcribing` to `failed` (a finalize that died with a previous process), called before `recover_interrupted`.
+- `get_history_entries` is **keyset‑paginated** (`id < cursor ORDER BY id DESC`). `ON DELETE CASCADE` requires `PRAGMA foreign_keys = ON` per connection (`get_connection` sets it).
 
 ---
 
-## 8. File‑by‑file map of our changes
+## 8. The local MCP server — Claude over your private library
 
-Everything below is **our** delta on top of upstream Handy (`git status` against the upstream clone before it was flattened into this repo).
+**Dir:** [handy/mcp/](../handy/mcp/) — a dependency‑free **Bun + `bun:sqlite`** server speaking **newline‑delimited JSON‑RPC 2.0 over stdio**, registered for Claude Code in repo‑root [.mcp.json](../.mcp.json).
+
+- **Read‑only** (`new Database(path, { readonly: true })`) over `history.db` — it can never alter a recording — and **stdio only, no network listener**, so the "nothing leaves the Mac" promise holds.
+- Tools ([db.ts](../handy/mcp/db.ts) query layer, [server.ts](../handy/mcp/server.ts) protocol):
+  - **`list_sessions`** — recent sessions (id, title, timestamp, status, snippet, speaker labels).
+  - **`get_session`** — one session's full transcript + speaker‑attributed segments.
+  - **`search_sessions`** — case‑insensitive search across transcripts **and** segments, snippet centered on the hit.
+- DB path defaults to `~/Library/Application Support/com.pais.handy/history.db`; `PLAUDE_DB` overrides it (used by tests).
+- **Security:** every query is parameterized (no SQL injection); table/column names are static; tool args only become bound params or integer limits. Verified by `bun test` (4 tests) and a piped JSON‑RPC smoke test, and run **live against the real `history.db`**.
+- The hand‑rolled protocol (vs the SDK) is a deliberate dep‑avoidance choice; `@modelcontextprotocol/sdk` is the named upgrade path. Claude Desktop registration is in [handy/mcp/README.md](../handy/mcp/README.md).
+
+---
+
+## 9. Frontend
+
+- **Sessions panel** ([settings/sessions/SessionsSettings.tsx](../handy/src/components/settings/sessions/SessionsSettings.tsx)) — a focused **hero capture experience**: one large record button (idle → mic glyph; recording → stop square inside a pulsing ring), a **Meeting / Microphone / System** segmented mode control (Meeting default → `commands.startMeeting()`; the others → `startSession(source)`), a live **elapsed timer**, and a calm privacy promise. `active` is driven by the `sessionStateChanged` event, so it's correct however a session is toggled. Registered as the `sessions` sidebar section in [Sidebar.tsx](../handy/src/components/Sidebar.tsx) (`SECTIONS_CONFIG`).
+- **History view** ([settings/history/HistorySettings.tsx](../handy/src/components/settings/history/HistorySettings.tsx)) — `SpeakerTimeline` (speaker · time · text per segment) plus **speaker chips** (distinct labels at a glance), infinite scroll, optimistic delete + retry. The transcript area is status‑driven: `transcribing` → a "Transcribing…" pulse; `failed` → the retry hint; otherwise the text, or **"No speech detected"** for an empty `done` row.
+- i18n keys added under `settings.sessions.*` (modeMeeting/Mic/System, tapToStart, capturing*, privacyNote, …), `settings.history.noSpeech`, and `tray.startRecording/stopRecording`. i18n is build‑blocking (ESLint).
+
+---
+
+## 10. Control surface (commands · events · CLI)
+
+| Kind | Name | Notes |
+| --- | --- | --- |
+| Command | `start_session(source)` | single‑source session (→ `start_sources([source])`) |
+| Command | `start_meeting()` | **dual** mic + system (→ `start_sources([Mic, SystemAudio])`) |
+| Command | `stop_session()` / `is_session_active()` | |
+| Command | `get_session_segments(id)`, `download_diarization_models`, `is_diarization_available` | |
+| Event | `session-state-changed` | `{ active, source }` — drives UI + tray |
+| Event | `historyUpdatePayload` | `added`/`updated`/`deleted`/`toggled` |
+| CLI | `--toggle-session` / `--toggle-system-session` | single source (mic / system) |
+| CLI | `--toggle-meeting` | dual mic + system — the graffetta action, for scripting/headless |
+
+CLI flags forward to a running primary via the single‑instance plugin (`lib.rs`); all routes converge on `SessionManager`.
+
+---
+
+## 11. File‑by‑file map of our changes
 
 **New files**
 | File | What |
 | --- | --- |
-| `src-tauri/src/managers/session.rs` | Long‑form session lifecycle (Fase 0/1) |
+| `src-tauri/src/managers/session.rs` | Long‑form + dual‑stream session lifecycle (Fase 0/1/3) |
 | `src-tauri/src/audio_toolkit/audio/system_audio.rs` | CoreAudio Process Tap system‑audio recorder (Fase 1) |
-| `src-tauri/src/managers/diarization.rs` | `align()` pure core + `DiarizationManager` engine (Fase 2) |
-| `src-tauri/src/commands/session.rs` | `start_session`/`stop_session`/`is_session_active` commands |
+| `src-tauri/src/managers/diarization.rs` | `align` + `label_segments` + `merge_segments` pure core + `DiarizationManager` |
+| `src-tauri/src/commands/session.rs` | `start_session` / `start_meeting` / `stop_session` / `is_session_active` |
 | `resources/models/diarization/{segmentation,embedding}.onnx` | Bundled diarization models |
+| `handy/mcp/{db,server}.ts`, `db.test.ts`, `package.json`, `README.md` | Local MCP server |
+| `.mcp.json` (repo root) | Registers the MCP server for Claude Code |
 
 **Modified files**
 | File | Why |
 | --- | --- |
 | `src-tauri/src/managers/model.rs` | Diarization model download + bundled auto‑install |
 | `src-tauri/src/managers/transcription.rs` | `transcribe_with_segments` (refactor to `transcribe_inner`) |
-| `src-tauri/src/managers/history.rs` | Migration #5, segments/speakers persistence, FK pragma |
-| `src-tauri/src/commands/history.rs` | `get_session_segments` |
-| `src-tauri/src/commands/models.rs` | `download_diarization_models`, `is_diarization_available` |
+| `src-tauri/src/managers/history.rs` | Migrations #5/#6, status column, segments/speakers persistence (dual namespace), `save_pending_entry`, `fail_stale_transcribing` |
+| `src-tauri/src/tray.rs` | The menu‑bar "graffetta" `toggle_session` item |
+| `src-tauri/src/commands/history.rs` | `get_session_segments`, status on retry |
 | `src-tauri/src/audio_toolkit/audio/recorder.rs` | `with_chunk_sink` faithful tap + bounded‑RAM early‑return |
-| `src-tauri/src/audio_toolkit/audio/mod.rs` | export `system_audio` |
-| `src-tauri/src/lib.rs` | manager wiring, CLI routing, command registration, bindings‑export panic→warn fix |
-| `src-tauri/src/cli.rs` | `--toggle-session`, `--toggle-system-session` flags |
-| `src-tauri/src/commands/mod.rs`, `managers/mod.rs` | module exports |
-| `src-tauri/Cargo.toml` / `Cargo.lock` | sherpa‑onnx + objc2 deps |
-| `src-tauri/.cargo/config.toml` | `@loader_path` rpath for the sherpa dylib |
-| `src-tauri/build.rs` | `HANDY_FORCE_AI_STUB` escape hatch |
-| `src-tauri/Info.plist` | `NSAudioCaptureUsageDescription` |
-| `src/components/settings/history/HistorySettings.tsx` | `SpeakerTimeline` |
-| `src/i18n/locales/en/translation.json` | `settings.history.unknownSpeaker` |
-| `src/bindings.ts` | regenerated (tauri‑specta) |
+| `src-tauri/src/lib.rs` | manager wiring, tray `toggle_session` handler + `SessionStateChanged` listener, `--toggle-meeting`, `start_meeting` registration, `fail_stale_transcribing` at startup |
+| `src-tauri/src/cli.rs` | `--toggle-session`, `--toggle-system-session`, `--toggle-meeting` |
+| `src-tauri/Cargo.toml` / `.cargo/config.toml` / `build.rs` / `Info.plist` | sherpa+objc2 deps, rpath, stub hatch, audio‑capture usage string |
+| `src/components/settings/sessions/SessionsSettings.tsx` | Hero capture UI (new dir) |
+| `src/components/settings/history/HistorySettings.tsx` | `SpeakerTimeline` + speaker chips + status states |
+| `src/components/Sidebar.tsx`, `settings/index.ts` | `sessions` sidebar section |
+| `src/i18n/locales/{en,it}/translation.json` | sessions/history/tray keys |
+| `src/bindings.ts` | regenerated (tauri‑specta): `start_meeting`, `TranscriptionStatus`, `SessionStateChanged`, status field |
 
 ---
 
-## 9. Build system specifics
-
-- **`HANDY_FORCE_AI_STUB=1`** — `build.rs` would compile the real Apple Intelligence Swift bridge because the CLT SDK ships `FoundationModels.framework`, but CLT lacks the `@Generable` macro plugin (full Xcode only) → false positive. The var forces the stub. Drop it once full Xcode is installed.
-- **`CMAKE_POLICY_VERSION_MINIMUM=3.5`** — standalone CMake 4.x rejects the pre‑3.5 policy floors that whisper.cpp's build uses.
-- **sherpa `shared` + rpath** — `features = ["shared"]` downloads a *prebuilt* `osx-arm64-shared` bundle (no CMake build) and links onnxruntime as a dylib (avoids the duplicate‑symbol clash with `ort`'s static onnxruntime). `.cargo/config.toml` adds `rustflags = ["-C", "link-arg=-Wl,-rpath,@loader_path"]` so the binary finds the dylib at runtime.
-- **Bundled resources** — `bundle.resources = ["resources/**/*"]` ships the VAD + diarization models; `BaseDirectory::Resource` resolves them at runtime (dev and production).
-
----
-
-## 10. Running & testing
+## 12. Build, run & test
 
 ```bash
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"
@@ -195,40 +252,41 @@ export CMAKE_POLICY_VERSION_MINIMUM=3.5 HANDY_FORCE_AI_STUB=1
 cd handy
 
 bun tauri dev                       # full app (regenerates bindings.ts)
-cd src-tauri && cargo test --lib    # 79 unit tests (align, persistence, sha, sessions, …)
-cargo check --lib                   # fast type‑check
-bun run lint                        # ESLint (enforces i18n: no literal JSX strings)
+cd src-tauri && cargo test --lib    # 92 unit tests (align/merge/mix/drop_bleed, persistence+status, sessions, …)
+cd ../mcp && bun test               # 4 MCP query tests
+cargo check --lib                   # fast type‑check     |    bun run lint   (i18n enforced)
 ```
 
-**Inspecting results** (the app writes here):
-```bash
-~/Library/Application Support/com.pais.handy/history.db        # transcripts + segments + speakers
-~/Library/Application Support/com.pais.handy/recordings/       # *.session.pcm (live) / *.wav (finalized)
-~/Library/Logs/com.pais.handy/handy.log                        # runtime log
-```
+Build specifics: **`HANDY_FORCE_AI_STUB=1`** forces the Apple Intelligence stub (CLT lacks the `@Generable` macro plugin); **`CMAKE_POLICY_VERSION_MINIMUM=3.5`** for whisper.cpp under CMake 4.x; **sherpa `shared` + `@loader_path` rpath** to coexist with `ort`'s static onnxruntime; **`bundle.resources = ["resources/**/*"]`** ships VAD + diarization models. A real installable `.app`/`.dmg` bundle (`tauri build`) needs **full Xcode** for signing/notarization — the release *binary* builds today.
+
+**Live‑verification recipes** are in [HANDOFF.md §7](HANDOFF.md) (dual `--toggle-meeting` capture; the MCP `list_sessions` JSON‑RPC). The dual‑stream meeting capture was **validated live with real speech** (mic "Me" + system "Speaker 1", merged) on 2026‑06‑23.
+
+App data: `~/Library/Application Support/com.pais.handy/` (`history.db`, `recordings/`); log: `~/Library/Logs/com.pais.handy/handy.log`.
 
 ---
 
-## 11. Operational gotchas (learned during live testing)
+## 13. Operational gotchas
 
-1. **The CLI toggle needs a running primary.** `handy --toggle-system-session` only works as a *second* instance forwarding to a live `bun tauri dev`. With no primary running, it boots its own instance and silently ignores the flag (the flag is only handled in the single‑instance callback in `lib.rs`).
-2. **Capture taps the *default output at session start*.** If system audio is routed to headphones/Bluetooth, or muted, the tap records silence (→ empty transcript, the graceful fallback). Verify you can *hear* the audio from the captured output before recording.
-3. **An ASR model must be resident at `finalize`.** Diarization+transcription only run when `is_model_loaded()` is true — keep a model selected with `unload_timeout ≠ Immediately`, or warm it with one dictation first.
-4. **Bindings‑export is dev‑only and non‑fatal.** It was a `panic` on a read‑only CWD (which swallowed the CLI flag); it now logs and continues, so the toggle works from any directory.
+1. **The CLI toggle needs a running primary.** `handy --toggle-meeting` (etc.) only works as a *second* instance forwarding to a live `bun tauri dev`; with no primary it boots its own instance and silently ignores the flag.
+2. **Capture taps the *default output at session start*.** If system audio is muted/routed elsewhere, the tap records silence (→ empty transcript, graceful). Verify you can *hear* it.
+2a. **Meeting on speakers bleeds into the mic.** When you capture a call through the laptop **speakers** (not headphones), the mic re‑captures the system audio, so one remote person would appear twice (`Me` + `Speaker N`). `drop_bleed` (§6.1) collapses that echo; for the cleanest separation use **headphones** (then `Me` = only your voice). For recording something you're only *listening* to, use **System** mode (no mic) rather than Meeting.
+3. **An ASR model must be resident at `finalize`.** Diarization+transcription only run when `is_model_loaded()`; the model unloads on its idle timer, so a long gap before capturing yields an empty (but `done`) row. Keep `unload_timeout ≠ Immediately`, or warm it with one dictation first.
+4. **Drop the lock before emitting a re‑entrant event** (the start‑path deadlock, §5a) — the listener runs inline and re‑locks the manager.
+5. **Bindings‑export is dev‑only and non‑fatal** (logs and continues on a read‑only CWD).
 
 ---
 
-## 12. What remains
+## 14. What remains
 
 | Item | Notes |
 | --- | --- |
-| **Sessions UI** | Start/stop button + Mic/System selector + live indicator. Backend command + 3‑touch frontend. Plan in [HANDOFF §7](HANDOFF-FASE2.md). The biggest UX gap — sessions are CLI‑only today. |
-| **Diarization download button** | Command exists; needs a UI home (the Sessions view). Bundling already covers fresh clones. |
-| **Clustering threshold tuning** | Only if a rapid‑alternation recording over‑merges speakers. Defaults validated good for long‑turn audio. Lever: `OfflineSpeakerDiarizationConfig` threshold / `num_clusters` in `diarization.rs`. |
-| **Mic + system two‑track mux** | `ActiveRecorder` is either/or; capturing both sides of an in‑person + remote meeting needs a summing stage. |
-| **iPhone target** | No iOS support upstream. Recommended: iPhone‑as‑capture + Mac‑as‑brain. Needs full Xcode. |
-| **Apple Intelligence bridge** | Real Swift `@Generable` bridge needs full Xcode (drop `HANDY_FORCE_AI_STUB`). |
+| **Acoustic echo cancellation (AEC)** | `drop_bleed` removes the speaker‑bleed *duplicate* in the transcript, but the mic still *records* the echo into the mixed WAV. True AEC (subtract the system reference from the mic input, in `recorder.rs`/`session.rs`) would clean the audio itself and let `Me` capture only your voice even on speakers. Headphones sidestep it entirely today. |
+| **History‑as‑result polish** | Capture panel is focused/modern; a richer session‑card view (summary, duration, play) would make the *result* as beautiful as the capture. |
+| **Diarization download button** | Command exists; needs a UI home in the Sessions view (bundling already covers fresh clones). |
+| **Installable app** | `tauri build` release binary works; a signed/notarized `.app`/`.dmg` needs full Xcode. |
+| **iPhone target** | No iOS upstream. Recommended: iPhone‑as‑capture + Mac‑as‑brain over Apple's nearby transfer (MultipeerConnectivity / Network.framework peer‑to‑peer), dropping files into the recordings dir for the existing finalize pipeline. Needs full Xcode. |
+| **Clustering threshold tuning** | Only if a rapid‑alternation recording over‑merges speakers. Lever: `OfflineSpeakerDiarizationConfig` in `diarization.rs`. |
 
 ---
 
-*Last updated 2026‑06‑22. For the line‑cited forensic state and the build de‑risk spikes, see [HANDOFF-FASE2.md](HANDOFF-FASE2.md).*
+*Last updated 2026‑06‑23. Entry‑point: [HANDOFF.md](HANDOFF.md). Line‑cited Fase 2 forensics: [HANDOFF-FASE2.md](HANDOFF-FASE2.md). riffado teardown verdict: [DECISIONS.md](DECISIONS.md).*

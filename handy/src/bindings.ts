@@ -750,9 +750,22 @@ async getClamshellMicrophone() : Promise<Result<string, string>> {
 async isRecording() : Promise<boolean> {
     return await TAURI_INVOKE("is_recording");
 },
-async startSession() : Promise<Result<null, string>> {
+async startSession(source: Source) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_session") };
+    return { status: "ok", data: await TAURI_INVOKE("start_session", { source }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Start a meeting capture: mic + system audio as two streams that finalize into one
+ * speaker-attributed transcript. System audio is best-effort, so this still works (mic-only)
+ * when nothing is playing — the seamless one-click capture, also reachable from the tray.
+ */
+async startMeeting() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_meeting") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -876,9 +889,11 @@ async isLaptop() : Promise<Result<boolean, string>> {
 
 
 export const events = __makeEvents__<{
-historyUpdatePayload: HistoryUpdatePayload
+historyUpdatePayload: HistoryUpdatePayload,
+sessionStateChanged: SessionStateChanged
 }>({
-historyUpdatePayload: "history-update-payload"
+historyUpdatePayload: "history-update-payload",
+sessionStateChanged: "session-state-changed"
 })
 
 /** user-defined constants **/
@@ -896,7 +911,7 @@ export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
 export type CustomSounds = { start: boolean; stop: boolean }
 export type EngineType = "Whisper" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
 export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
-export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean }
+export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; status: TranscriptionStatus }
 export type HistoryUpdatePayload = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
 /**
  * Result of changing keyboard implementation
@@ -925,8 +940,34 @@ export type PersistedSegment = { start_ms: number; end_ms: number; speaker_label
 export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean }
 export type RecordingRetentionPeriod = "never" | "preserve_limit" | "days_3" | "weeks_2" | "months_3"
 export type SecretMap = Partial<{ [key in string]: string }>
+/**
+ * Emitted on every session start/stop so the UI's live indicator stays correct
+ * even when the state changes out-of-band — the `--toggle-session` CLI path,
+ * startup recovery, and the UI command all flow through `start`/`stop`, so this
+ * is the single source of truth for "is a session recording right now".
+ */
+export type SessionStateChanged = { active: boolean; source: Source | null }
 export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string }
 export type SoundTheme = "marimba" | "pop" | "custom"
+/**
+ * Which audio source a session captures.
+ */
+export type Source = 
+/**
+ * The microphone (Fase 0).
+ */
+"Mic" | 
+/**
+ * macOS system / loopback audio — the other side of a call/meeting (Fase 1).
+ */
+"SystemAudio"
+/**
+ * Lifecycle of a row's transcript. `Done` is the default for the one-shot dictation path
+ * and every pre-existing row (the migration's column default). Long-form sessions move
+ * `Transcribing` → `Done`/`Failed`, so the UI can show live progress and a crashed
+ * finalize leaves a `Failed` row instead of one stuck on "transcribing" forever.
+ */
+export type TranscriptionStatus = "transcribing" | "done" | "failed"
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
 export type WhisperAcceleratorSetting = "auto" | "cpu" | "gpu"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }

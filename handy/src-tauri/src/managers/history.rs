@@ -54,6 +54,12 @@ static MIGRATIONS: &[M] = &[
         );
         CREATE INDEX IF NOT EXISTS idx_segments_history ON transcription_segments(history_id);",
     ),
+    // Sessions UI: per-row transcript lifecycle so a long-form session shows a live
+    // "transcribing…" row the moment Stop is pressed (filling the silent gap before the
+    // slow transcription lands) and a finalize crash leaves a 'failed' row, not one stuck
+    // on "transcribing". APPEND-ONLY. Default 'done' keeps every existing row and the
+    // one-shot dictation path correct with zero code change.
+    M::up("ALTER TABLE transcription_history ADD COLUMN status TEXT NOT NULL DEFAULT 'done';"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -75,6 +81,38 @@ pub enum HistoryUpdatePayload {
     Toggled { id: i64 },
 }
 
+/// Lifecycle of a row's transcript. `Done` is the default for the one-shot dictation path
+/// and every pre-existing row (the migration's column default). Long-form sessions move
+/// `Transcribing` → `Done`/`Failed`, so the UI can show live progress and a crashed
+/// finalize leaves a `Failed` row instead of one stuck on "transcribing" forever.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriptionStatus {
+    Transcribing,
+    Done,
+    Failed,
+}
+
+impl TranscriptionStatus {
+    fn as_db(self) -> &'static str {
+        match self {
+            Self::Transcribing => "transcribing",
+            Self::Done => "done",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// Map the stored string back. Unknown values degrade to `Done` (the column default)
+    /// so a hand-edited or future-schema DB never panics the read path.
+    fn from_db(s: &str) -> Self {
+        match s {
+            "transcribing" => Self::Transcribing,
+            "failed" => Self::Failed,
+            _ => Self::Done,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct HistoryEntry {
     pub id: i64,
@@ -86,6 +124,7 @@ pub struct HistoryEntry {
     pub post_processed_text: Option<String>,
     pub post_process_prompt: Option<String>,
     pub post_process_requested: bool,
+    pub status: TranscriptionStatus,
 }
 
 /// A persisted, speaker-attributed transcript segment — the read shape for the timeline UI.
@@ -110,24 +149,43 @@ fn write_segments(
     history_id: i64,
     segments: &[TimedSegment],
 ) -> Result<()> {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     let tx = conn.transaction()?;
-    // diarizer-local speaker index -> persisted speakers.id (first-seen order via insertion)
+    // Two independent speaker namespaces sharing one `speakers` table:
+    //  - explicit names (e.g. the dual-stream mic track "Me") deduped by the label string;
+    //  - diarizer indices deduped by local id and surfaced as "Speaker N" in first-seen order.
+    // They number independently, so "Me" never shifts the remote "Speaker 1/2…" sequence.
     let mut local_to_db: BTreeMap<i64, i64> = BTreeMap::new();
+    let mut label_to_db: HashMap<String, i64> = HashMap::new();
     for seg in segments {
-        if let Some(local) = seg.speaker_id {
-            if !local_to_db.contains_key(&local) {
-                let label = format!("Speaker {}", local_to_db.len() + 1);
+        let db_speaker: Option<i64> = if let Some(label) = &seg.speaker_label {
+            if let Some(&id) = label_to_db.get(label) {
+                Some(id)
+            } else {
                 tx.execute(
                     "INSERT INTO speakers (history_id, label, embedding) VALUES (?1, ?2, NULL)",
                     params![history_id, label],
                 )?;
-                local_to_db.insert(local, tx.last_insert_rowid());
+                let id = tx.last_insert_rowid();
+                label_to_db.insert(label.clone(), id);
+                Some(id)
             }
-        }
-    }
-    for seg in segments {
-        let db_speaker = seg.speaker_id.and_then(|l| local_to_db.get(&l).copied());
+        } else if let Some(local) = seg.speaker_id {
+            if let Some(&id) = local_to_db.get(&local) {
+                Some(id)
+            } else {
+                let generated = format!("Speaker {}", local_to_db.len() + 1);
+                tx.execute(
+                    "INSERT INTO speakers (history_id, label, embedding) VALUES (?1, ?2, NULL)",
+                    params![history_id, generated],
+                )?;
+                let id = tx.last_insert_rowid();
+                local_to_db.insert(local, id);
+                Some(id)
+            }
+        } else {
+            None
+        };
         // ponytail: `confidence` is NULL until the ASR pass threads it through (Phase D).
         tx.execute(
             "INSERT INTO transcription_segments
@@ -162,6 +220,16 @@ fn read_segments(conn: &Connection, history_id: i64) -> Result<Vec<PersistedSegm
     Ok(rows)
 }
 
+/// Flip every row still marked `transcribing` to `failed`. Used once at startup: such a row
+/// means a `finalize` died with the process and will never resume, so without this it would
+/// pulse "transcribing" forever. Returns how many rows were healed.
+fn fail_stale_transcribing(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE transcription_history SET status = 'failed' WHERE status = 'transcribing'",
+        [],
+    )?)
+}
+
 #[cfg(test)]
 mod segment_persistence_tests {
     use super::*;
@@ -186,6 +254,17 @@ mod segment_persistence_tests {
             start_ms,
             end_ms,
             speaker_id,
+            speaker_label: None,
+            text: text.into(),
+        }
+    }
+
+    fn labeled(start_ms: i64, end_ms: i64, label: &str, text: &str) -> TimedSegment {
+        TimedSegment {
+            start_ms,
+            end_ms,
+            speaker_id: None,
+            speaker_label: Some(label.into()),
             text: text.into(),
         }
     }
@@ -211,6 +290,89 @@ mod segment_persistence_tests {
             .query_row("SELECT COUNT(*) FROM speakers", [], |r| r.get(0))
             .unwrap();
         assert_eq!(speakers, 2); // exactly two distinct speakers persisted
+    }
+
+    #[test]
+    fn status_column_defaults_to_done_and_round_trips_every_variant() {
+        // in_memory_db() inserts one row via migration #6's column default (no `status` listed).
+        let conn = in_memory_db();
+        let stored: String = conn
+            .query_row(
+                "SELECT status FROM transcription_history WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "done");
+        assert_eq!(TranscriptionStatus::from_db(&stored), TranscriptionStatus::Done);
+
+        for st in [
+            TranscriptionStatus::Transcribing,
+            TranscriptionStatus::Done,
+            TranscriptionStatus::Failed,
+        ] {
+            assert_eq!(TranscriptionStatus::from_db(st.as_db()), st);
+        }
+        // Unknown / future values degrade to Done rather than panicking the read path.
+        assert_eq!(TranscriptionStatus::from_db("garbage"), TranscriptionStatus::Done);
+    }
+
+    #[test]
+    fn stale_transcribing_rows_are_healed_to_failed_at_startup() {
+        // in_memory_db() seeds one 'done' row; add a stuck 'transcribing' one.
+        let conn = in_memory_db();
+        conn.execute(
+            "INSERT INTO transcription_history (file_name, timestamp, saved, title, transcription_text, status)
+             VALUES ('stuck.wav', 0, 0, 't', '', 'transcribing')",
+            [],
+        )
+        .unwrap();
+
+        let healed = fail_stale_transcribing(&conn).unwrap();
+        assert_eq!(healed, 1);
+
+        let still_stuck: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transcription_history WHERE status = 'transcribing'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_stuck, 0);
+        // The pre-existing 'done' row is left alone — only stuck rows are touched.
+        let done: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transcription_history WHERE status = 'done'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(done, 1);
+    }
+
+    #[test]
+    fn explicit_label_is_its_own_speaker_independent_of_diarizer_numbering() {
+        // A dual-stream session: "Me" (mic) interleaved with two diarized remote speakers.
+        let mut conn = in_memory_db();
+        let segments = vec![
+            labeled(0, 1000, "Me", "ciao a tutti"),
+            seg(1000, 2000, Some(0), "buongiorno"),
+            labeled(2000, 3000, "Me", "iniziamo"),
+            seg(3000, 4000, Some(1), "perfetto"),
+        ];
+        write_segments(&mut conn, 1, &segments).unwrap();
+
+        let got = read_segments(&conn, 1).unwrap();
+        let labels: Vec<_> = got.iter().map(|s| s.speaker_label.as_deref()).collect();
+        // "Me" is reused (one row), remote speakers number independently as Speaker 1 / 2.
+        assert_eq!(
+            labels,
+            vec![Some("Me"), Some("Speaker 1"), Some("Me"), Some("Speaker 2")]
+        );
+        let speakers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM speakers", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(speakers, 3); // Me + Speaker 1 + Speaker 2
     }
 
     #[test]
@@ -393,6 +555,7 @@ impl HistoryManager {
             post_processed_text: row.get("post_processed_text")?,
             post_process_prompt: row.get("post_process_prompt")?,
             post_process_requested: row.get("post_process_requested")?,
+            status: TranscriptionStatus::from_db(&row.get::<_, String>("status")?),
         })
     }
 
@@ -400,12 +563,45 @@ impl HistoryManager {
         &self.recordings_dir
     }
 
-    /// Save a new history entry to the database.
+    /// Save a new, fully-transcribed history entry (the one-shot dictation path).
     /// The WAV file should already have been written to the recordings directory.
     pub fn save_entry(
         &self,
         file_name: String,
         transcription_text: String,
+        post_process_requested: bool,
+        post_processed_text: Option<String>,
+        post_process_prompt: Option<String>,
+    ) -> Result<HistoryEntry> {
+        self.insert_entry(
+            file_name,
+            transcription_text,
+            TranscriptionStatus::Done,
+            post_process_requested,
+            post_processed_text,
+            post_process_prompt,
+        )
+    }
+
+    /// Save a placeholder row in `Transcribing` state for a long-form session, so it shows
+    /// in History the moment the user stops — before the (slow) transcription completes.
+    /// `finalize` then calls `update_transcription(..)` to fill it in and flip the status.
+    pub fn save_pending_entry(&self, file_name: String) -> Result<HistoryEntry> {
+        self.insert_entry(
+            file_name,
+            String::new(),
+            TranscriptionStatus::Transcribing,
+            false,
+            None,
+            None,
+        )
+    }
+
+    fn insert_entry(
+        &self,
+        file_name: String,
+        transcription_text: String,
+        status: TranscriptionStatus,
         post_process_requested: bool,
         post_processed_text: Option<String>,
         post_process_prompt: Option<String>,
@@ -423,8 +619,9 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                post_process_requested,
+                status
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 &file_name,
                 timestamp,
@@ -434,6 +631,7 @@ impl HistoryManager {
                 &post_processed_text,
                 &post_process_prompt,
                 post_process_requested,
+                status.as_db(),
             ],
         )?;
 
@@ -447,6 +645,7 @@ impl HistoryManager {
             post_processed_text,
             post_process_prompt,
             post_process_requested,
+            status,
         };
 
         debug!("Saved history entry with id {}", entry.id);
@@ -478,25 +677,42 @@ impl HistoryManager {
         read_segments(&conn, history_id)
     }
 
-    /// Update an existing history entry with new transcription results (used by retry).
+    /// Self-healing: at startup, mark any session left mid-`transcribing` (its finalize died
+    /// with a previous process) as `failed`, so it never pulses "transcribing" forever and the
+    /// History retry icon can re-run it. Call once before `recover_interrupted`.
+    pub fn fail_stale_transcribing(&self) -> Result<usize> {
+        let conn = self.get_connection()?;
+        let healed = fail_stale_transcribing(&conn)?;
+        if healed > 0 {
+            info!("Healed {healed} stale transcribing session(s) at startup");
+        }
+        Ok(healed)
+    }
+
+    /// Update an existing history entry with new transcription results and flip its status.
+    /// Used by the retry command (→ `Done`) and by long-form session finalize, which fills
+    /// in the placeholder row created by `save_pending_entry` (→ `Done`/`Failed`).
     pub fn update_transcription(
         &self,
         id: i64,
         transcription_text: String,
         post_processed_text: Option<String>,
         post_process_prompt: Option<String>,
+        status: TranscriptionStatus,
     ) -> Result<HistoryEntry> {
         let conn = self.get_connection()?;
         let updated = conn.execute(
             "UPDATE transcription_history
              SET transcription_text = ?1,
                  post_processed_text = ?2,
-                 post_process_prompt = ?3
-             WHERE id = ?4",
+                 post_process_prompt = ?3,
+                 status = ?4
+             WHERE id = ?5",
             params![
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
+                status.as_db(),
                 id
             ],
         )?;
@@ -507,7 +723,7 @@ impl HistoryManager {
 
         let entry = conn
             .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, status
                  FROM transcription_history WHERE id = ?1",
                 params![id],
                 Self::map_history_entry,
@@ -658,7 +874,7 @@ impl HistoryManager {
             (Some(cursor_id), Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, status
                      FROM transcription_history
                      WHERE id < ?1
                      ORDER BY id DESC
@@ -672,7 +888,7 @@ impl HistoryManager {
             (None, Some(lim)) => {
                 let fetch_count = (lim + 1) as i64;
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, status
                      FROM transcription_history
                      ORDER BY id DESC
                      LIMIT ?1",
@@ -684,7 +900,7 @@ impl HistoryManager {
             }
             (_, None) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, status
                      FROM transcription_history
                      ORDER BY id DESC",
                 )?;
@@ -715,7 +931,8 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
+                post_process_requested,
+                status
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT 1",
@@ -742,7 +959,8 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
+                post_process_requested,
+                status
              FROM transcription_history
              WHERE transcription_text != ''
              ORDER BY timestamp DESC
@@ -796,7 +1014,8 @@ impl HistoryManager {
                 transcription_text,
                 post_processed_text,
                 post_process_prompt,
-                post_process_requested
+                post_process_requested,
+                status
              FROM transcription_history
              WHERE id = ?1",
         )?;
@@ -865,7 +1084,8 @@ mod tests {
                 transcription_text TEXT NOT NULL,
                 post_processed_text TEXT,
                 post_process_prompt TEXT,
-                post_process_requested BOOLEAN NOT NULL DEFAULT 0
+                post_process_requested BOOLEAN NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'done'
             );",
         )
         .expect("create transcription_history table");

@@ -31,6 +31,12 @@ pub struct CliArgs {
     #[arg(long)]
     pub toggle_system_session: bool,
 
+    /// Toggle a long-form MEETING session on/off — captures mic + system audio as two streams
+    /// merged into one speaker-attributed transcript (sent to running instance). This is the
+    /// menu-bar "graffetta" action, exposed as a flag for scripting and headless testing.
+    #[arg(long)]
+    pub toggle_meeting: bool,
+
     /// Enable debug mode with verbose logging
     #[arg(long)]
     pub debug: bool,

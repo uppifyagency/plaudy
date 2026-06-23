@@ -9,9 +9,20 @@ use tauri::{AppHandle, Manager};
 
 #[tauri::command]
 #[specta::specta]
-pub fn start_session(app: AppHandle) -> Result<(), String> {
+pub fn start_session(app: AppHandle, source: Source) -> Result<(), String> {
     app.state::<Arc<SessionManager>>()
-        .start(Source::Mic)
+        .start(source)
+        .map_err(|e| e.to_string())
+}
+
+/// Start a meeting capture: mic + system audio as two streams that finalize into one
+/// speaker-attributed transcript. System audio is best-effort, so this still works (mic-only)
+/// when nothing is playing — the seamless one-click capture, also reachable from the tray.
+#[tauri::command]
+#[specta::specta]
+pub fn start_meeting(app: AppHandle) -> Result<(), String> {
+    app.state::<Arc<SessionManager>>()
+        .start_sources(&[Source::Mic, Source::SystemAudio])
         .map_err(|e| e.to_string())
 }
 

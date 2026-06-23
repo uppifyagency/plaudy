@@ -26,11 +26,14 @@
 use crate::audio_toolkit::{save_wav_file, AudioRecorder};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::audio_toolkit::audio::SystemAudioRecorder;
-use crate::managers::diarization::{align, DiarizationManager};
-use crate::managers::history::HistoryManager;
+use crate::managers::diarization::{
+    align, drop_bleed, label_segments, merge_segments, DiarizationManager, TimedSegment,
+};
+use crate::managers::history::{HistoryManager, TranscriptionStatus};
 use crate::managers::transcription::TranscriptionManager;
 use anyhow::{anyhow, Result};
 use log::{error, info, warn};
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -39,18 +42,29 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use tauri::{AppHandle, Manager};
+use tauri_specta::Event;
 
 /// Marks an in-progress raw capture. A file with this suffix that outlives its
 /// process is an interrupted session to be recovered.
 const PCM_SUFFIX: &str = ".session.pcm";
 
 /// Which audio source a session captures.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, specta::Type)]
 pub enum Source {
     /// The microphone (Fase 0).
     Mic,
     /// macOS system / loopback audio — the other side of a call/meeting (Fase 1).
     SystemAudio,
+}
+
+/// Emitted on every session start/stop so the UI's live indicator stays correct
+/// even when the state changes out-of-band — the `--toggle-session` CLI path,
+/// startup recovery, and the UI command all flow through `start`/`stop`, so this
+/// is the single source of truth for "is a session recording right now".
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct SessionStateChanged {
+    pub active: bool,
+    pub source: Option<Source>,
 }
 
 /// The active capture backend. Both expose the same start/stop/close surface and
@@ -87,10 +101,20 @@ impl ActiveRecorder {
     }
 }
 
-struct ActiveSession {
+/// One capture track within a session: a recorder feeding its own on-disk PCM sink.
+struct Track {
     recorder: ActiveRecorder,
     writer: JoinHandle<Result<u64>>,
     pcm_path: PathBuf,
+    source: Source,
+}
+
+/// An active session is one or more capture tracks that finalize into a single history entry:
+/// their audio is mixed into one playable WAV and their transcripts merged into one
+/// speaker-attributed timeline. A solo track behaves exactly as before; two tracks (mic +
+/// system audio) are the dual-stream "meeting" capture.
+struct ActiveSession {
+    tracks: Vec<Track>,
     wav_path: PathBuf,
 }
 
@@ -117,43 +141,69 @@ impl SessionManager {
 
     /// Start if idle, stop if active. Returns whether a session is active afterwards.
     pub fn toggle(&self, source: Source) -> Result<bool> {
+        self.toggle_sources(&[source])
+    }
+
+    /// Toggle a multi-source session — the menu-bar "graffetta" uses `[Mic, SystemAudio]` so one
+    /// click captures both sides of a call. Returns whether a session is active afterwards.
+    pub fn toggle_sources(&self, sources: &[Source]) -> Result<bool> {
         if self.is_active() {
             self.stop()?;
             Ok(false)
         } else {
-            self.start(source)?;
+            self.start_sources(sources)?;
             Ok(true)
         }
     }
 
     pub fn start(&self, source: Source) -> Result<()> {
+        self.start_sources(&[source])
+    }
+
+    /// Start a session capturing each source as its own track. Sources are **best-effort**: one
+    /// that fails to start (system-audio permission denied, nothing playing, unsupported target)
+    /// is skipped with a warning so the session still records whatever it can — it only errors
+    /// when *no* source starts. This is the seamless, self-healing capture the product wants:
+    /// one click records the mic, and the system audio too whenever it is available.
+    pub fn start_sources(&self, sources: &[Source]) -> Result<()> {
         let mut guard = self.active.lock().unwrap();
         if guard.is_some() {
             return Err(anyhow!("A session is already active"));
         }
 
         let id = new_session_id();
-        let pcm_path = self.recordings_dir.join(format!("{id}{PCM_SUFFIX}"));
         let wav_path = self.recordings_dir.join(format!("{id}.wav"));
 
-        let (tx, rx) = mpsc::channel::<Vec<f32>>();
-        // Build + start the capture backend FIRST: if it fails (e.g. the system-audio
-        // permission is denied) we return before creating any on-disk artifacts, so
-        // no empty `.session.pcm` is orphaned. Frames emitted between start and the
-        // writer spawning buffer harmlessly in the unbounded channel.
-        let recorder = build_recorder(source, tx)?;
-        let writer = spawn_pcm_writer(pcm_path.clone(), rx);
+        let mut tracks: Vec<Track> = Vec::new();
+        for &source in sources {
+            match build_track(source, &id, &self.recordings_dir) {
+                Ok(track) => {
+                    info!(
+                        "Session track started ({source:?}) → {}",
+                        track.pcm_path.display()
+                    );
+                    tracks.push(track);
+                }
+                Err(e) => warn!("Session source {source:?} unavailable, skipping: {e}"),
+            }
+        }
+        if tracks.is_empty() {
+            return Err(anyhow!("No audio source could be started for the session"));
+        }
 
-        info!(
-            "Long-form session started ({source:?}) → {}",
-            pcm_path.display()
-        );
-        *guard = Some(ActiveSession {
-            recorder,
-            writer,
-            pcm_path,
-            wav_path,
-        });
+        let primary = tracks.first().map(|t| t.source);
+        *guard = Some(ActiveSession { tracks, wav_path });
+        // Release the lock BEFORE emitting. The SessionStateChanged listener (lib.rs) runs
+        // INLINE on this thread and calls `is_active()`, which re-locks `active`. A
+        // std::sync::Mutex is non-reentrant, so emitting while still holding `guard` deadlocks
+        // the start path. (stop() is already safe: it `.take()`s the guard as a temporary, so
+        // it is dropped before stop's own emit.)
+        drop(guard);
+        let _ = SessionStateChanged {
+            active: true,
+            source: primary,
+        }
+        .emit(&self.app);
         Ok(())
     }
 
@@ -165,51 +215,71 @@ impl SessionManager {
             .take()
             .ok_or_else(|| anyhow!("No active session"))?;
 
-        let ActiveSession {
+        let ActiveSession { tracks, wav_path } = session;
+
+        // Flip the live indicator to idle as soon as the user stops — before the (possibly slow)
+        // frame drain — so the UI feels responsive. Finalization and the row that follows happen
+        // off-thread.
+        let _ = SessionStateChanged {
+            active: false,
+            source: None,
+        }
+        .emit(&self.app);
+
+        // Tear down every track and collect its (pcm_path, source) for finalize. `stop()` drains
+        // each track's buffered frames; dropping the recorder closes its writer channel.
+        let mut captured: Vec<(PathBuf, Source)> = Vec::with_capacity(tracks.len());
+        for Track {
             mut recorder,
             writer,
             pcm_path,
-            wav_path,
-        } = session;
+            source,
+        } in tracks
+        {
+            let _ = recorder.stop();
+            let _ = recorder.close();
+            drop(recorder);
+            match writer.join() {
+                Ok(Ok(samples)) => info!("Session track {source:?} captured {samples} samples"),
+                Ok(Err(e)) => error!("Session track {source:?} writer error: {e}"),
+                Err(_) => error!("Session track {source:?} writer thread panicked"),
+            }
+            captured.push((pcm_path, source));
+        }
 
-        // Tear down capture. `stop()` drains every buffered frame into the sink
-        // before returning; dropping the recorder drops the last sink sender,
-        // which closes the writer's channel so it can finalize the file.
-        let _ = recorder.stop();
-        let _ = recorder.close();
-        drop(recorder);
-        let samples = writer
-            .join()
-            .map_err(|_| anyhow!("PCM writer thread panicked"))??;
-        info!("Session captured {samples} samples; finalizing");
-
-        // Finalize off-thread: transcribing a long file is slow and must not block
-        // the caller. The new row reaches the UI via HistoryUpdatePayload::Added.
+        // Finalize off-thread: transcribing a long file is slow and must not block the caller.
         let app = self.app.clone();
         std::thread::spawn(move || {
-            if let Err(e) = finalize(&app, &pcm_path, &wav_path) {
+            if let Err(e) = finalize_session(&app, &captured, &wav_path) {
                 error!("Failed to finalize session {}: {e}", wav_path.display());
             }
         });
         Ok(())
     }
 
-    /// Finalize any session whose process died mid-recording. Safe to call once at
-    /// startup, after the history and transcription managers are in managed state.
+    /// Finalize any session whose process died mid-recording. Safe to call once at startup,
+    /// after the history and transcription managers are in managed state. Each orphan PCM is
+    /// recovered as its own single-track session (no cross-track merge across a crash).
     pub fn recover_interrupted(&self) {
         let Ok(entries) = fs::read_dir(&self.recordings_dir) else {
             return;
         };
         for entry in entries.flatten() {
             let pcm_path = entry.path();
-            if !pcm_path.to_string_lossy().ends_with(PCM_SUFFIX) {
+            let name = pcm_path.to_string_lossy();
+            if !name.ends_with(PCM_SUFFIX) {
                 continue;
             }
+            let source = if name.contains(".system.") {
+                Source::SystemAudio
+            } else {
+                Source::Mic
+            };
             let wav_path = wav_path_for(&pcm_path);
             warn!("Recovering interrupted session → {}", pcm_path.display());
             let app = self.app.clone();
             std::thread::spawn(move || {
-                if let Err(e) = finalize(&app, &pcm_path, &wav_path) {
+                if let Err(e) = finalize_session(&app, &[(pcm_path.clone(), source)], &wav_path) {
                     error!("Recovery failed for {}: {e}", pcm_path.display());
                 }
             });
@@ -230,6 +300,30 @@ fn new_session_id() -> String {
     let millis = chrono::Utc::now().timestamp_millis();
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     format!("session-{millis}-{seq}")
+}
+
+/// Short on-disk tag for a track's source, e.g. `session-<id>.mic.session.pcm`. Lets
+/// `recover_interrupted` tell which source an orphan PCM came from.
+fn source_suffix(source: Source) -> &'static str {
+    match source {
+        Source::Mic => "mic",
+        Source::SystemAudio => "system",
+    }
+}
+
+/// Build + start one capture track: open the recorder for `source` and spawn its PCM writer.
+/// The recorder is started FIRST so a failure (e.g. denied permission) leaves no orphan file.
+fn build_track(source: Source, id: &str, dir: &Path) -> Result<Track> {
+    let pcm_path = dir.join(format!("{id}.{}{PCM_SUFFIX}", source_suffix(source)));
+    let (tx, rx) = mpsc::channel::<Vec<f32>>();
+    let recorder = build_recorder(source, tx)?;
+    let writer = spawn_pcm_writer(pcm_path.clone(), rx);
+    Ok(Track {
+        recorder,
+        writer,
+        pcm_path,
+        source,
+    })
 }
 
 /// Construct and start the capture backend for `source`, feeding `tx` (the
@@ -285,21 +379,68 @@ fn spawn_pcm_writer(pcm_path: PathBuf, rx: mpsc::Receiver<Vec<f32>>) -> JoinHand
     })
 }
 
-/// PCM → faithful WAV → (best-effort) transcript → history row, then delete the PCM.
-fn finalize(app: &AppHandle, pcm_path: &Path, wav_path: &Path) -> Result<()> {
-    let samples = read_pcm_i16(pcm_path)?;
-    if samples.is_empty() {
-        warn!("Session PCM {} is empty; discarding", pcm_path.display());
-        let _ = fs::remove_file(pcm_path);
+/// Sum equal-rate mono tracks into one buffer (pad shorter tracks with silence, clamp to
+/// [-1, 1]). Folds a dual-stream session's mic + system audio into a single playable 16 kHz
+/// WAV while the transcript keeps the speakers separate.
+///
+/// ponytail: plain sum + clamp — loud and simple. Two people rarely talk over each other, so
+/// clipping is rare; a soft limiter is the upgrade path if overlap distortion is ever heard.
+fn mix_tracks(tracks: &[&[f32]]) -> Vec<f32> {
+    let len = tracks.iter().map(|t| t.len()).max().unwrap_or(0);
+    let mut out = vec![0.0f32; len];
+    for track in tracks {
+        for (o, &s) in out.iter_mut().zip(track.iter()) {
+            *o += s;
+        }
+    }
+    for s in out.iter_mut() {
+        *s = s.clamp(-1.0, 1.0);
+    }
+    out
+}
+
+/// Finalize a session from its captured tracks: mix the audio into one playable WAV, then
+/// (best-effort, only if a model is resident) transcribe each track, attribute speakers, and
+/// merge into one chronological timeline persisted as a single history entry.
+///
+/// One track → the existing behavior: diarize + align the single stream. Multiple tracks →
+/// the mic track is labelled "Me" and the system track is diarized, then the two are merged —
+/// the dual-stream "who said what across both sides of the call" timeline. Either way a row is
+/// created immediately in `Transcribing` state so the session shows in History the moment the
+/// user stops, then flips to `Done`/`Failed`.
+fn finalize_session(app: &AppHandle, tracks: &[(PathBuf, Source)], wav_path: &Path) -> Result<()> {
+    // Always remove the source PCMs afterward — on success, discard, OR error — so a
+    // deterministic failure can never make `recover_interrupted` re-finalize the same files on
+    // every startup (which would also re-insert a `transcribing` row each time). Once
+    // `save_wav_file` succeeds the audio lives in the mixed WAV, so the only case this discards a
+    // PCM "early" is a filesystem error where the PCM is already unusable.
+    let outcome = finalize_session_inner(app, tracks, wav_path);
+    for (pcm, _) in tracks {
+        let _ = fs::remove_file(pcm);
+    }
+    outcome
+}
+
+fn finalize_session_inner(
+    app: &AppHandle,
+    tracks: &[(PathBuf, Source)],
+    wav_path: &Path,
+) -> Result<()> {
+    let mut decoded: Vec<(Vec<f32>, Source)> = Vec::with_capacity(tracks.len());
+    for (pcm, source) in tracks {
+        decoded.push((read_pcm_i16(pcm)?, *source));
+    }
+    if decoded.iter().all(|(s, _)| s.is_empty()) {
+        warn!("Session has no audio in any track; discarding");
         return Ok(());
     }
 
-    // Faithful archive: mono 16 kHz 16-bit WAV, identical spec to dictation clips.
-    save_wav_file(wav_path, &samples)?;
+    // Mix into the single playable archive (mono 16 kHz) by reference — never clone the
+    // (possibly multi-hour) track buffers, which transcription still consumes below.
+    let buffers: Vec<&[f32]> = decoded.iter().map(|(s, _)| s.as_slice()).collect();
+    save_wav_file(wav_path, &mix_tracks(&buffers))?;
+    drop(buffers);
 
-    // Transcribe only when a model is resident: recovery runs at startup before any
-    // model loads, and `transcribe` would otherwise block on the load condvar. A
-    // missing transcript never costs the recording — the audio is already saved.
     let tm = app.state::<Arc<TranscriptionManager>>();
     let hm = app.state::<Arc<HistoryManager>>();
     let file_name = wav_path
@@ -308,32 +449,84 @@ fn finalize(app: &AppHandle, pcm_path: &Path, wav_path: &Path) -> Result<()> {
         .to_string_lossy()
         .to_string();
 
-    if tm.is_model_loaded() {
-        // Fase 2: diarize first (borrows `samples`), then transcribe (consumes it) — avoids
-        // cloning a multi-hour buffer. Diarization no-ops instantly when its models are absent,
-        // so this is free in the default install; `align` then labels every segment "unknown".
-        let diarizer = DiarizationManager::new(&crate::portable::app_data_dir(app)?.join("models"));
-        let turns = diarizer.diarize(&samples);
+    let entry = hm.save_pending_entry(file_name)?;
 
-        let (transcript, asr_segments) =
-            tm.transcribe_with_segments(samples).unwrap_or_else(|e| {
-                warn!("Session transcription failed: {e}");
-                (String::new(), Vec::new())
-            });
-
-        let entry = hm.save_entry(file_name, transcript, false, None, None)?;
-        if !asr_segments.is_empty() {
-            let segments = align(&asr_segments, &turns);
-            if let Err(e) = hm.save_segments(entry.id, &segments) {
-                warn!("Failed to persist diarized segments: {e}");
-            }
-        }
-    } else {
+    // Transcribe only when a model is resident: recovery runs at startup before any model
+    // loads, and `transcribe` would otherwise block on the load condvar. A missing transcript
+    // never costs the recording — the audio is already saved.
+    if !tm.is_model_loaded() {
         warn!("No transcription model loaded; saved session audio without a transcript");
-        hm.save_entry(file_name, String::new(), false, None, None)?;
+        hm.update_transcription(entry.id, String::new(), None, None, TranscriptionStatus::Done)?;
+        return Ok(());
     }
 
-    let _ = fs::remove_file(pcm_path);
+    let dual = decoded.len() > 1;
+    let diarizer = DiarizationManager::new(&crate::portable::app_data_dir(app)?.join("models"));
+    let mut full_texts: Vec<String> = Vec::new();
+    let mut track_segments: Vec<Vec<TimedSegment>> = Vec::new();
+    let mut any_error = false;
+
+    for (samples, source) in decoded {
+        // The mic track of a dual session is a single known voice ("Me"); everything else is
+        // diarized. Diarize before transcription consumes `samples`.
+        let label_as_me = dual && matches!(source, Source::Mic);
+        let turns = if label_as_me {
+            Vec::new()
+        } else {
+            diarizer.diarize(&samples)
+        };
+        match tm.transcribe_with_segments(samples) {
+            Ok((text, asr)) => {
+                if !text.trim().is_empty() {
+                    full_texts.push(text);
+                }
+                track_segments.push(if label_as_me {
+                    label_segments(&asr, "Me")
+                } else {
+                    align(&asr, &turns)
+                });
+            }
+            Err(e) => {
+                warn!("Session track {source:?} transcription failed: {e}");
+                any_error = true;
+            }
+        }
+    }
+
+    // Merge the tracks chronologically, then drop microphone "Me" segments that are just the
+    // system audio echoing back through the speakers (acoustic bleed when not on headphones) —
+    // one person must never appear as two speakers. Persist before flipping status so the UI
+    // finds the segments when it re-fetches on completion.
+    let merged = drop_bleed(merge_segments(track_segments), "Me");
+    if !merged.is_empty() {
+        if let Err(e) = hm.save_segments(entry.id, &merged) {
+            warn!("Failed to persist merged segments: {e}");
+        }
+    }
+    // Build the flat transcript from the de-duped timeline when segments exist (so the bleed copy
+    // is gone from the flat text too); fall back to the raw per-track texts only when the ASR
+    // model returned no segment timings to de-dup on.
+    let transcript = if merged.is_empty() {
+        full_texts.join("\n")
+    } else {
+        merged
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    // ponytail (accepted degradation): in a multi-track meeting, a single track erroring (rare —
+    // same model + machine for both) yields a partial transcript still marked `Done` rather than
+    // `Failed`. We keep the partial content visible instead of hiding it; the mixed WAV holds
+    // both sides, so the History retry re-transcribes the whole recording if the user wants it.
+    // Only a session where *everything* failed and nothing was produced becomes `Failed`.
+    let status = if transcript.trim().is_empty() && merged.is_empty() && any_error {
+        TranscriptionStatus::Failed
+    } else {
+        TranscriptionStatus::Done
+    };
+    hm.update_transcription(entry.id, transcript, None, None, status)?;
+
     info!("Session finalized → {}", wav_path.display());
     Ok(())
 }
@@ -390,11 +583,40 @@ mod tests {
     }
 
     #[test]
+    fn mix_sums_tracks_pads_shorter_and_clamps() {
+        let a = vec![0.5, 0.8, 0.5];
+        let b = vec![0.5, 0.8]; // shorter → padded with silence for the tail
+        let mixed = mix_tracks(&[a.as_slice(), b.as_slice()]);
+        assert_eq!(mixed.len(), 3);
+        assert!((mixed[0] - 1.0).abs() < 1e-6); // 0.5 + 0.5
+        assert!((mixed[1] - 1.0).abs() < 1e-6); // 0.8 + 0.8 = 1.6 → clamped to 1.0
+        assert!((mixed[2] - 0.5).abs() < 1e-6); // 0.5 + silence
+    }
+
+    #[test]
+    fn mix_of_no_tracks_is_empty() {
+        let empty: &[&[f32]] = &[];
+        assert!(mix_tracks(empty).is_empty());
+    }
+
+    #[test]
     fn recovery_derives_wav_path_from_pcm() {
         let pcm = Path::new("/data/recordings/session-1750000000123-7.session.pcm");
         assert_eq!(
             wav_path_for(pcm),
             Path::new("/data/recordings/session-1750000000123-7.wav")
+        );
+    }
+
+    #[test]
+    fn source_serializes_as_external_tag_strings() {
+        // The hand-mirrored TS binding (`type Source = "Mic" | "SystemAudio"`) and the
+        // `start_session(source)` command depend on this exact wire form. Pin it so a
+        // future serde attribute can't silently desync the frontend contract.
+        assert_eq!(serde_json::to_string(&Source::Mic).unwrap(), "\"Mic\"");
+        assert_eq!(
+            serde_json::to_string(&Source::SystemAudio).unwrap(),
+            "\"SystemAudio\""
         );
     }
 

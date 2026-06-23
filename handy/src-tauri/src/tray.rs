@@ -1,5 +1,6 @@
 use crate::managers::history::{HistoryEntry, HistoryManager};
 use crate::managers::model::ModelManager;
+use crate::managers::session::SessionManager;
 use crate::managers::transcription::TranscriptionManager;
 use crate::settings;
 use crate::tray_i18n::get_tray_translations;
@@ -177,6 +178,19 @@ pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&
     )
     .expect("failed to create unload model item");
 
+    // Long-form session toggle — the menu-bar "graffetta": one click starts/stops a recording
+    // session. The label reflects live session state so it reads correctly however the session
+    // was toggled (tray, CLI, or the Sessions panel).
+    let session_active = app.state::<Arc<SessionManager>>().is_active();
+    let session_label = if session_active {
+        &strings.stop_recording
+    } else {
+        &strings.start_recording
+    };
+    let toggle_session_i =
+        MenuItem::with_id(app, "toggle_session", session_label, true, None::<&str>)
+            .expect("failed to create session toggle item");
+
     let menu = match state {
         TrayIconState::Recording | TrayIconState::Transcribing => {
             let cancel_i = MenuItem::with_id(app, "cancel", &strings.cancel, true, None::<&str>)
@@ -185,6 +199,8 @@ pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&
                 app,
                 &[
                     &version_i,
+                    &separator(),
+                    &toggle_session_i,
                     &separator(),
                     &cancel_i,
                     &separator(),
@@ -202,6 +218,8 @@ pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&
             app,
             &[
                 &version_i,
+                &separator(),
+                &toggle_session_i,
                 &separator(),
                 &copy_last_transcript_i,
                 &separator(),
@@ -273,7 +291,7 @@ pub fn copy_last_transcript(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::last_transcript_text;
-    use crate::managers::history::HistoryEntry;
+    use crate::managers::history::{HistoryEntry, TranscriptionStatus};
 
     fn build_entry(transcription: &str, post_processed: Option<&str>) -> HistoryEntry {
         HistoryEntry {
@@ -286,6 +304,7 @@ mod tests {
             post_processed_text: post_processed.map(|text| text.to_string()),
             post_process_prompt: None,
             post_process_requested: false,
+            status: TranscriptionStatus::Done,
         }
     }
 

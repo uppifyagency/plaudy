@@ -28,11 +28,16 @@ pub struct AsrSegment {
 
 /// An ASR segment after speaker attribution — the shape persisted in `transcription_segments`.
 /// `speaker_id` is `None` when no diarizer turn overlaps the segment (graceful fallback).
+///
+/// `speaker_label`, when `Some`, is an authoritative speaker name that overrides the
+/// diarizer-index → "Speaker N" generation at persist time. A dual-stream session uses it to
+/// tag the mic track "Me", distinct from the diarized remote speakers on the system track.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimedSegment {
     pub start_ms: i64,
     pub end_ms: i64,
     pub speaker_id: Option<i64>,
+    pub speaker_label: Option<String>,
     pub text: String,
     // ponytail: the `confidence` schema column originates in the ASR pass, not here — threaded
     // in when `transcribe_with_segments` lands (Phase D). Alignment only decides the speaker.
@@ -71,9 +76,87 @@ pub fn align(asr: &[AsrSegment], turns: &[SpeakerTurn]) -> Vec<TimedSegment> {
                 start_ms: seg.start_ms,
                 end_ms: seg.end_ms,
                 speaker_id: best.map(|(_, spk)| spk),
+                speaker_label: None,
                 text: seg.text.clone(),
             }
         })
+        .collect()
+}
+
+/// Tag every ASR segment with a fixed speaker name (e.g. the mic track of a dual-stream
+/// session is all "Me"). `speaker_id` is left `None`: the name is authoritative, not a
+/// diarizer index, so it survives the merge and persist steps unchanged.
+pub fn label_segments(asr: &[AsrSegment], label: &str) -> Vec<TimedSegment> {
+    asr.iter()
+        .map(|s| TimedSegment {
+            start_ms: s.start_ms,
+            end_ms: s.end_ms,
+            speaker_id: None,
+            speaker_label: Some(label.to_string()),
+            text: s.text.clone(),
+        })
+        .collect()
+}
+
+/// Merge per-track attributed segments into one chronological "who said what" timeline.
+///
+/// Stable sort by start time: equal-timestamp segments keep track-then-input order, so the
+/// caller's track ordering (mic before system) is a deterministic tie-break. This is how a
+/// dual-stream session — "Me" from the microphone plus the diarized remote speakers from the
+/// system-audio tap — becomes a single ordered transcript.
+pub fn merge_segments(tracks: Vec<Vec<TimedSegment>>) -> Vec<TimedSegment> {
+    let mut all: Vec<TimedSegment> = tracks.into_iter().flatten().collect();
+    all.sort_by_key(|s| s.start_ms);
+    all
+}
+
+/// Word tokens of `s`, lowercased, punctuation stripped — the comparison basis for echo detection.
+fn word_tokens(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// True when `a` and `b` are near-identical speech: ≥70% of the shorter segment's words appear
+/// in the other. Robust to minor ASR/punctuation differences between the two captures of one sound.
+fn is_echo_text(a: &str, b: &str) -> bool {
+    let (wa, wb) = (word_tokens(a), word_tokens(b));
+    if wa.is_empty() || wb.is_empty() {
+        return false;
+    }
+    use std::collections::HashSet;
+    let sb: HashSet<&String> = wb.iter().collect();
+    let shared = wa.iter().filter(|w| sb.contains(w)).count();
+    let smaller = wa.len().min(wb.len());
+    shared * 10 >= smaller * 7
+}
+
+/// Remove acoustic-bleed duplicates from a merged dual-stream transcript. When the Mac plays a
+/// call through the SPEAKERS (no headphones), the microphone re-captures that sound, so the
+/// system audio is duplicated into the mic ("Me") track — one person appears as two speakers.
+/// Drop a `mic_label` segment when an overlapping segment from another speaker has near-identical
+/// text (that is the echo); genuinely distinct mic speech (you actually talking) is kept.
+///
+/// ponytail: cheap, no-DSP mitigation. The real fix is acoustic echo cancellation on the mic
+/// input (subtract the system reference signal) — the named upgrade path for clean speaker use.
+pub fn drop_bleed(segments: Vec<TimedSegment>, mic_label: &str) -> Vec<TimedSegment> {
+    let is_mic = |s: &TimedSegment| s.speaker_label.as_deref() == Some(mic_label);
+    let others: Vec<&TimedSegment> = segments.iter().filter(|s| !is_mic(s)).collect();
+    segments
+        .iter()
+        .filter(|seg| {
+            if !is_mic(seg) {
+                return true;
+            }
+            let echo = others.iter().any(|o| {
+                overlap_ms(seg.start_ms, seg.end_ms, o.start_ms, o.end_ms) > 0
+                    && is_echo_text(&seg.text, &o.text)
+            });
+            !echo
+        })
+        .cloned()
         .collect()
 }
 
@@ -206,6 +289,85 @@ mod tests {
         // seg [0,1000): overlaps turn(0..500, spk 2)=500 and turn(500..1000, spk 1)=500 -> spk 1
         let out = align(&[asr(0, 1000, "x")], &[turn(0, 500, 2), turn(500, 1000, 1)]);
         assert_eq!(out[0].speaker_id, Some(1));
+    }
+
+    #[test]
+    fn label_segments_tags_every_segment_with_the_name_and_no_diarizer_id() {
+        let out = label_segments(&[asr(0, 500, "ciao"), asr(500, 900, "tutto bene")], "Me");
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|s| s.speaker_label.as_deref() == Some("Me")));
+        assert!(out.iter().all(|s| s.speaker_id.is_none()));
+        assert_eq!(out[1].text, "tutto bene");
+    }
+
+    #[test]
+    fn merge_interleaves_tracks_chronologically() {
+        // "Me" (mic) at [0,1000) and [2000,3000); a remote speaker at [1000,2000).
+        let me = label_segments(&[asr(0, 1000, "hi"), asr(2000, 3000, "bye")], "Me");
+        let them = align(&[asr(1000, 2000, "hello")], &[turn(1000, 2000, 0)]);
+        let merged = merge_segments(vec![me, them]);
+        let order: Vec<&str> = merged.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(order, vec!["hi", "hello", "bye"]);
+        assert_eq!(merged[1].speaker_id, Some(0)); // remote keeps its diarized id
+        assert_eq!(merged[0].speaker_label.as_deref(), Some("Me"));
+    }
+
+    #[test]
+    fn merge_is_stable_so_mic_wins_ties_over_system() {
+        // Both tracks have a segment starting at 0; mic is passed first → it sorts first.
+        let me = label_segments(&[asr(0, 500, "me-first")], "Me");
+        let them = align(&[asr(0, 500, "them")], &[turn(0, 500, 0)]);
+        let merged = merge_segments(vec![me, them]);
+        assert_eq!(merged[0].text, "me-first");
+        assert_eq!(merged[1].text, "them");
+    }
+
+    #[test]
+    fn merge_of_empty_tracks_is_empty() {
+        assert!(merge_segments(vec![vec![], vec![]]).is_empty());
+    }
+
+    fn me_seg(start_ms: i64, end_ms: i64, text: &str) -> TimedSegment {
+        TimedSegment {
+            start_ms,
+            end_ms,
+            speaker_id: None,
+            speaker_label: Some("Me".into()),
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn drop_bleed_removes_mic_echo_of_overlapping_system_text() {
+        // Listening to one person on the speakers: system tap got it cleanly (Speaker 0), the mic
+        // re-captured the same words (labelled "Me"). The "Me" echo must be dropped.
+        let merged = merge_segments(vec![
+            vec![me_seg(0, 1000, "great work")],
+            align(&[asr(0, 1000, "Great work.")], &[turn(0, 1000, 0)]),
+        ]);
+        let out = drop_bleed(merged, "Me");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].speaker_id, Some(0)); // the system copy survives
+    }
+
+    #[test]
+    fn drop_bleed_keeps_genuinely_distinct_mic_speech() {
+        // A real meeting: you say something different from the remote speaker at the same time.
+        let merged = merge_segments(vec![
+            vec![me_seg(0, 1000, "i totally agree with that plan")],
+            align(&[asr(0, 1000, "let us review the budget")], &[turn(0, 1000, 0)]),
+        ]);
+        assert_eq!(drop_bleed(merged, "Me").len(), 2);
+    }
+
+    #[test]
+    fn drop_bleed_keeps_same_words_at_different_times() {
+        // Coincidental identical short words but no time overlap → not an echo.
+        let merged = merge_segments(vec![
+            vec![me_seg(2000, 3000, "okay")],
+            align(&[asr(0, 1000, "okay")], &[turn(0, 1000, 0)]),
+        ]);
+        assert_eq!(drop_bleed(merged, "Me").len(), 2);
     }
 
     #[test]
