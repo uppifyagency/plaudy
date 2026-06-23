@@ -77,6 +77,7 @@ Drop `HANDY_FORCE_AI_STUB` once **full Xcode** is installed (also needed for the
 | **Local MCP server** (Claude bridge) | `handy/mcp/`, `.mcp.json` | **verified live against the real `history.db`** (returned rows 11/12 + diarized meetings); 4 tests + JSON‑RPC smoke | High |
 | Bundled diarization models | `resources/models/diarization/` | auto‑install on first run → offline | High |
 | Release binary | `tauri build --no-bundle` | built clean, 36 MB | High |
+| **History session‑card result view** | `HistorySettings.tsx` | source icon (meeting/mic/system/dictation) · topic title · date·duration·source meta · speaker chips · collapsible timeline + player + actions | High (live‑validated this session) |
 
 > **The one bug the tests did NOT catch (now fixed):** a **start‑path deadlock** — `start_sources` emitted `SessionStateChanged` while holding the `active` mutex; the listener runs *inline* and re‑enters the manager (`change_tray_icon` → `update_tray_menu` → `is_active()`), re‑locking the non‑reentrant mutex. Fixed by `drop(guard)` before `emit`. See §6.1. Found by adversarial review; the unit tests never traverse the emit→listener path. **Lesson: drop the lock before emitting any event whose listener may re‑enter the manager.**
 
@@ -191,7 +192,7 @@ cd ../ && bunx tsc --noEmit && bun run lint                    # clean
 ## 11. What's PENDING / DEFERRED (prioritized)
 
 1. **Acoustic echo cancellation (AEC).** `drop_bleed` removes the transcript *duplicate*; the echo is still in the mixed WAV and the mic still hears the speakers. Real AEC (subtract the system reference from the mic in `recorder.rs`/`session.rs`) is the proper fix for clean speaker use. Headphones sidestep it today.
-2. **History‑as‑result polish.** The capture panel is focused/modern; the History list that shows the *result* is still utilitarian. A session‑card view (title, speakers, duration, summary, play) is the "make the result as beautiful as the capture" step. *(Best done with eyes on the running app — the Tauri webview can't be screenshotted by the agent.)*
+2. **AI topic‑title & summary for History cards.** The session‑card result view **shipped** (`HistorySettings.tsx`, live‑validated): source icon, date·duration·source meta, speaker chips, and a collapsible speaker timeline + player + actions. The card title is currently the transcript's opening words — a **non‑AI placeholder**. The remaining piece — a clean AI‑generated title/summary instead of that placeholder — is **gated on the AI‑provider decision (§12)**.
 3. **"Enable diarization" download button** in the Sessions view (command exists; bundling already covers fresh clones, so it's a fallback).
 4. **Signed/notarized `.app`/`.dmg`** — release *binary* builds; the bundle needs **full Xcode**.
 5. **iPhone target (needs full Xcode).** No iOS upstream. Recommended: **iPhone‑as‑capture + Mac‑as‑brain** over Apple's nearby transfer — a SwiftUI app records locally and, on proximity, pushes files (MultipeerConnectivity, or Network.framework peer‑to‑peer Bonjour) into the Mac's `recordings/` dir, where the existing `recover_interrupted`/finalize pipeline ingests them chronologically.

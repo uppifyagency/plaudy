@@ -454,7 +454,13 @@
       "transcribing": "Transcribing...",
       "transcriptionFailed": "Transcription failed. You can re-transcribe using the retry icon.",
       "noSpeech": "No speech detected",
-      "unknownSpeaker": "Unknown"
+      "unknownSpeaker": "Unknown",
+      "expand": "Show details",
+      "collapse": "Hide details",
+      "sourceMeeting": "Meeting",
+      "sourceMic": "Microphone",
+      "sourceSystem": "System audio",
+      "sourceDictation": "Dictation"
     },
     "debug": {
       "title": "Debug",

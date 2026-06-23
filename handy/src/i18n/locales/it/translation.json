@@ -453,7 +453,13 @@
       "retranscribeError": "Impossibile ri-trascrivere. Riprova.",
       "transcribing": "Trascrizione in corso...",
       "noSpeech": "Nessun parlato rilevato",
-      "transcriptionFailed": "Trascrizione fallita. Puoi ri-trascrivere usando l'icona di ripetizione."
+      "transcriptionFailed": "Trascrizione fallita. Puoi ri-trascrivere usando l'icona di ripetizione.",
+      "expand": "Mostra dettagli",
+      "collapse": "Nascondi dettagli",
+      "sourceMeeting": "Riunione",
+      "sourceMic": "Microfono",
+      "sourceSystem": "Audio di sistema",
+      "sourceDictation": "Dettatura"
     },
     "debug": {
       "title": "Debug",
