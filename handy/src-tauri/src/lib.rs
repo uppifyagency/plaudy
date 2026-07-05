@@ -522,11 +522,13 @@ pub fn run(cli_args: CliArgs) {
             commands::session::start_meeting,
             commands::session::stop_session,
             commands::session::is_session_active,
+            commands::session::session_elapsed_ms,
             commands::transcription::set_model_unload_timeout,
             commands::transcription::get_model_load_status,
             commands::transcription::unload_model_manually,
             commands::history::get_history_entries,
             commands::history::search_history_entries,
+            commands::history::get_session_overviews,
             commands::history::get_session_segments,
             commands::history::toggle_history_entry_saved,
             commands::history::get_audio_file_path,
@@ -611,7 +613,10 @@ pub fn run(cli_args: CliArgs) {
                     Err(e) => log::error!("Failed to toggle session: {e}"),
                 }
             } else if args.iter().any(|a| a == "--toggle-system-session") {
-                match app.state::<Arc<SessionManager>>().toggle(Source::SystemAudio) {
+                match app
+                    .state::<Arc<SessionManager>>()
+                    .toggle(Source::SystemAudio)
+                {
                     Ok(active) => log::info!("System-audio session toggled; active = {active}"),
                     Err(e) => log::error!("Failed to toggle system-audio session: {e}"),
                 }

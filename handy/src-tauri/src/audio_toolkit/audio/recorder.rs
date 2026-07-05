@@ -30,6 +30,108 @@ pub(crate) enum AudioChunk {
     EndOfStream,
 }
 
+/// How long the consumer waits for audio before checking for commands anyway. A stalled
+/// device (unplugged mic, dead cpal backend) delivers no samples — the consumer must still
+/// see Stop/Shutdown within this bound instead of blocking forever (the old blocking `recv`
+/// deadlocked `stop()`/`close()` in exactly that scenario).
+const CMD_POLL: Duration = Duration::from_millis(100);
+
+/// Upper bound `stop()` waits for the consumer's drained-samples reply before giving up.
+/// Generous: a healthy consumer replies within DRAIN_TIMEOUT plus scheduling slack.
+pub(crate) const STOP_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long Cmd::Stop's drain loop waits for the producer's EndOfStream sentinel before
+/// giving up. Referenced by the system-audio IOProc's EOS handshake too — one constant,
+/// not a magic 2 s echoed across files.
+pub(crate) const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// What consumes each resampled 16 kHz frame while recording — one explicit mode instead of
+/// steering behavior through which `Option` happens to be set.
+pub(crate) enum FrameSink {
+    /// Long-form session: every frame — faithful, un-VAD-gated — streams to the PCM writer.
+    /// `alive` latches the first send failure so a dead writer logs once, not per frame.
+    Streaming {
+        sink: mpsc::Sender<Vec<f32>>,
+        alive: bool,
+    },
+    /// Dictation: VAD-gate (when present) and accumulate for the one-shot reply on Stop.
+    Dictation {
+        vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
+    },
+}
+
+impl FrameSink {
+    /// A chunk sink wins: "streaming mode" is precisely "a sink was attached".
+    pub(crate) fn from_parts(
+        chunk_sink: Option<mpsc::Sender<Vec<f32>>>,
+        vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
+    ) -> Self {
+        match chunk_sink {
+            Some(sink) => FrameSink::Streaming { sink, alive: true },
+            None => FrameSink::Dictation { vad },
+        }
+    }
+
+    /// Consume one frame while recording. Streaming pushes to the writer; dictation
+    /// VAD-gates into `out_buf` for the one-shot transcribe. Streaming must NOT also
+    /// accumulate into `out_buf`: for a multi-hour meeting that buffer would grow to the
+    /// full PCM in RAM, defeating the point of streaming to disk.
+    fn consume(&mut self, samples: &[f32], out_buf: &mut Vec<f32>) {
+        match self {
+            FrameSink::Streaming { sink, alive } => {
+                if sink.send(samples.to_vec()).is_err() && *alive {
+                    *alive = false;
+                    log::error!(
+                        "Chunk sink closed mid-recording; subsequent frames are dropped (writer died?)"
+                    );
+                }
+            }
+            FrameSink::Dictation { vad } => {
+                if let Some(vad_arc) = vad {
+                    let mut det = vad_arc.lock().unwrap();
+                    match det.push_frame(samples).unwrap_or(VadFrame::Speech(samples)) {
+                        VadFrame::Speech(buf) => out_buf.extend_from_slice(buf),
+                        VadFrame::Noise => {}
+                    }
+                } else {
+                    out_buf.extend_from_slice(samples);
+                }
+            }
+        }
+    }
+
+    /// Reset per-recording state on Start (the dictation VAD's rolling context).
+    fn reset(&mut self) {
+        if let FrameSink::Dictation { vad: Some(v) } = self {
+            v.lock().unwrap().reset();
+        }
+    }
+}
+
+/// Downmix an interleaved multi-channel frame to mono f32 by averaging channels
+/// (`channels <= 1` is a plain convert-copy). Appends to `out` without clearing it.
+/// The one mixdown both capture paths share — the cpal callback (any sample type) and the
+/// system-audio IOProc (f32) — so they can't silently diverge.
+pub(crate) fn downmix_interleaved<T>(data: &[T], channels: usize, out: &mut Vec<f32>)
+where
+    T: Sample,
+    f32: cpal::FromSample<T>,
+{
+    if channels <= 1 {
+        out.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
+    } else {
+        out.reserve(data.len() / channels);
+        for frame in data.chunks_exact(channels) {
+            let mono = frame
+                .iter()
+                .map(|&sample| sample.to_sample::<f32>())
+                .sum::<f32>()
+                / channels as f32;
+            out.push(mono);
+        }
+    }
+}
+
 pub struct AudioRecorder {
     device: Option<Device>,
     cmd_tx: Option<mpsc::Sender<Cmd>>,
@@ -171,11 +273,10 @@ impl AudioRecorder {
                     // Keep the stream alive while we process samples.
                     run_consumer(
                         sample_rate,
-                        vad,
+                        FrameSink::from_parts(chunk_sink, vad),
                         sample_rx,
                         cmd_rx,
                         level_cb,
-                        chunk_sink,
                         stop_flag,
                     );
                     drop(stream);
@@ -225,7 +326,9 @@ impl AudioRecorder {
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::Stop(resp_tx))?;
         }
-        Ok(resp_rx.recv()?) // wait for the samples
+        // Bounded wait: a consumer that never replies (worker died) must surface as an
+        // error, not hang the caller's UI thread forever.
+        Ok(resp_rx.recv_timeout(STOP_REPLY_TIMEOUT)?)
     }
 
     pub fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -264,22 +367,7 @@ impl AudioRecorder {
             eos_sent = false;
 
             output_buffer.clear();
-
-            if channels == 1 {
-                output_buffer.extend(data.iter().map(|&sample| sample.to_sample::<f32>()));
-            } else {
-                let frame_count = data.len() / channels;
-                output_buffer.reserve(frame_count);
-
-                for frame in data.chunks_exact(channels) {
-                    let mono_sample = frame
-                        .iter()
-                        .map(|&sample| sample.to_sample::<f32>())
-                        .sum::<f32>()
-                        / channels as f32;
-                    output_buffer.push(mono_sample);
-                }
-            }
+            downmix_interleaved(data, channels, &mut output_buffer);
 
             if sample_tx
                 .send(AudioChunk::Samples(output_buffer.clone()))
@@ -408,15 +496,137 @@ mod tests {
         assert!(!is_no_input_device_error("permission denied"));
         assert!(!is_no_input_device_error("device not found"));
     }
+
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn downmix_averages_interleaved_channels_and_passes_mono_through() {
+        let mut out = Vec::new();
+        downmix_interleaved(&[0.2f32, 0.4, -1.0, 1.0], 2, &mut out);
+        assert_eq!(out.len(), 2);
+        assert!((out[0] - 0.3).abs() < 1e-6, "stereo frame averages");
+        assert!(out[1].abs() < 1e-6, "opposite channels cancel");
+
+        out.clear();
+        downmix_interleaved(&[0.5f32, -0.5], 1, &mut out);
+        assert_eq!(out, vec![0.5, -0.5], "mono is a plain copy");
+    }
+
+    #[test]
+    fn downmix_converts_integer_samples_to_normalised_f32() {
+        let mut out = Vec::new();
+        downmix_interleaved(&[i16::MAX, i16::MAX], 2, &mut out);
+        assert_eq!(out.len(), 1);
+        assert!((out[0] - 1.0).abs() < 1e-3, "full-scale i16 → ~1.0");
+    }
+
+    /// Drive run_consumer with in-memory channels — no device needed. 16 kHz in = 16 kHz out,
+    /// so the resampler passes 30 ms (480-sample) frames through unchanged.
+    fn spawn_consumer(
+        sink: FrameSink,
+    ) -> (
+        mpsc::Sender<AudioChunk>,
+        mpsc::Sender<Cmd>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (sample_tx, sample_rx) = mpsc::channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let handle = std::thread::spawn(move || {
+            run_consumer(16_000, sink, sample_rx, cmd_rx, None, stop_flag)
+        });
+        (sample_tx, cmd_tx, handle)
+    }
+
+    #[test]
+    fn dictation_mode_accumulates_while_recording_and_replies_on_stop() {
+        let (sample_tx, cmd_tx, handle) = spawn_consumer(FrameSink::Dictation { vad: None });
+        cmd_tx.send(Cmd::Start).unwrap();
+        sample_tx.send(AudioChunk::Samples(vec![0.1; 480])).unwrap();
+        let (resp_tx, resp_rx) = mpsc::channel();
+        cmd_tx.send(Cmd::Stop(resp_tx)).unwrap();
+        sample_tx.send(AudioChunk::EndOfStream).unwrap(); // what the callback would inject
+
+        let samples = resp_rx.recv_timeout(STOP_REPLY_TIMEOUT).unwrap();
+        assert_eq!(samples.len(), 480);
+
+        drop(sample_tx); // channel closes → consumer exits
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn streaming_mode_feeds_the_sink_and_never_accumulates() {
+        let (chunk_tx, chunk_rx) = mpsc::channel();
+        let (sample_tx, cmd_tx, handle) = spawn_consumer(FrameSink::Streaming {
+            sink: chunk_tx,
+            alive: true,
+        });
+        cmd_tx.send(Cmd::Start).unwrap();
+        sample_tx.send(AudioChunk::Samples(vec![0.2; 480])).unwrap();
+        let (resp_tx, resp_rx) = mpsc::channel();
+        cmd_tx.send(Cmd::Stop(resp_tx)).unwrap();
+        sample_tx.send(AudioChunk::EndOfStream).unwrap();
+
+        let reply = resp_rx.recv_timeout(STOP_REPLY_TIMEOUT).unwrap();
+        assert!(
+            reply.is_empty(),
+            "streaming sessions must not grow the in-RAM stop buffer"
+        );
+        let streamed: usize = chunk_rx.try_iter().map(|f| f.len()).sum();
+        assert_eq!(streamed, 480, "every frame reaches the chunk sink");
+
+        drop(sample_tx);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn stop_replies_even_when_the_device_is_stalled() {
+        // THE deadlock regression: no samples ever arrive (unplugged mic / dead backend).
+        // Stop must still be seen (CMD_POLL) and answered (drain timeout), not hang forever.
+        let (sample_tx, cmd_tx, handle) = spawn_consumer(FrameSink::Dictation { vad: None });
+        let (resp_tx, resp_rx) = mpsc::channel();
+        cmd_tx.send(Cmd::Stop(resp_tx)).unwrap();
+        // No EndOfStream on purpose — the producer is dead.
+        let samples = resp_rx
+            .recv_timeout(STOP_REPLY_TIMEOUT)
+            .expect("stop must not deadlock on a silent device");
+        assert!(samples.is_empty());
+
+        cmd_tx.send(Cmd::Shutdown).unwrap();
+        drop(sample_tx);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn start_clears_any_leftover_buffer() {
+        let (sample_tx, cmd_tx, handle) = spawn_consumer(FrameSink::Dictation { vad: None });
+        cmd_tx.send(Cmd::Start).unwrap();
+        sample_tx.send(AudioChunk::Samples(vec![0.3; 480])).unwrap();
+        // Let the consumer actually record the frame before re-Starting (commands are
+        // served ahead of queued samples, so without this pause the sample would only be
+        // consumed later, inside Stop's drain).
+        std::thread::sleep(Duration::from_millis(300));
+        // Re-Start without stopping: the previously recorded audio must be discarded.
+        cmd_tx.send(Cmd::Start).unwrap();
+        let (resp_tx, resp_rx) = mpsc::channel();
+        cmd_tx.send(Cmd::Stop(resp_tx)).unwrap();
+        sample_tx.send(AudioChunk::EndOfStream).unwrap();
+
+        let samples = resp_rx.recv_timeout(STOP_REPLY_TIMEOUT).unwrap();
+        assert!(samples.is_empty(), "Start must reset the recording buffer");
+
+        drop(sample_tx);
+        handle.join().unwrap();
+    }
 }
 
 pub(crate) fn run_consumer(
     in_sample_rate: u32,
-    vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
+    mut sink: FrameSink,
     sample_rx: mpsc::Receiver<AudioChunk>,
     cmd_rx: mpsc::Receiver<Cmd>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
-    chunk_sink: Option<mpsc::Sender<Vec<f32>>>,
     stop_flag: Arc<AtomicBool>,
 ) {
     let mut frame_resampler = FrameResampler::new(
@@ -449,63 +659,11 @@ pub(crate) fn run_consumer(
         4000.0, // vocal_max_hz
     );
 
-    fn handle_frame(
-        samples: &[f32],
-        recording: bool,
-        vad: &Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
-        chunk_sink: &Option<mpsc::Sender<Vec<f32>>>,
-        out_buf: &mut Vec<f32>,
-    ) {
-        if !recording {
-            return;
-        }
-
-        // Streaming mode (long-form session): a chunk sink consumes every frame —
-        // faithful, un-VAD-gated — and persists it to disk. Do NOT also accumulate
-        // the whole recording in `out_buf`: that buffer is discarded at stop() and
-        // for a multi-hour meeting it would grow to the full PCM in RAM, defeating
-        // the point of streaming to disk.
-        if let Some(sink) = chunk_sink {
-            let _ = sink.send(samples.to_vec());
-            return;
-        }
-
-        // Dictation mode: VAD-gate and accumulate for the one-shot transcribe.
-        if let Some(vad_arc) = vad {
-            let mut det = vad_arc.lock().unwrap();
-            match det.push_frame(samples).unwrap_or(VadFrame::Speech(samples)) {
-                VadFrame::Speech(buf) => out_buf.extend_from_slice(buf),
-                VadFrame::Noise => {}
-            }
-        } else {
-            out_buf.extend_from_slice(samples);
-        }
-    }
-
     loop {
-        let chunk = match sample_rx.recv() {
-            Ok(c) => c,
-            Err(_) => break, // stream closed
-        };
-
-        let raw = match chunk {
-            AudioChunk::Samples(s) => s,
-            AudioChunk::EndOfStream => continue,
-        };
-
-        // ---------- spectrum processing ---------------------------------- //
-        if let Some(buckets) = visualizer.feed(&raw) {
-            if let Some(cb) = &level_cb {
-                cb(buckets);
-            }
-        }
-
-        // ---------- existing pipeline ------------------------------------ //
-        frame_resampler.push(&raw, &mut |frame: &[f32]| {
-            handle_frame(frame, recording, &vad, &chunk_sink, &mut processed_samples)
-        });
-
-        // non-blocking check for a command
+        // Serve pending commands FIRST, then wait (briefly) for audio: a command must never
+        // queue behind a sample, and a stalled device (unplugged mic, dead backend) must
+        // never starve Stop/Shutdown — see CMD_POLL. The old sample-first blocking recv
+        // deadlocked stop()/close() exactly when the device went silent.
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 Cmd::Start => {
@@ -513,9 +671,7 @@ pub(crate) fn run_consumer(
                     processed_samples.clear();
                     recording = true;
                     visualizer.reset();
-                    if let Some(v) = &vad {
-                        v.lock().unwrap().reset();
-                    }
+                    sink.reset();
                 }
                 Cmd::Stop(reply_tx) => {
                     recording = false;
@@ -526,10 +682,10 @@ pub(crate) fn run_consumer(
                     // silent — guaranteeing every captured sample is in the channel
                     // ahead of the sentinel.
                     loop {
-                        match sample_rx.recv_timeout(Duration::from_secs(2)) {
+                        match sample_rx.recv_timeout(DRAIN_TIMEOUT) {
                             Ok(AudioChunk::Samples(remaining)) => {
                                 frame_resampler.push(&remaining, &mut |frame: &[f32]| {
-                                    handle_frame(frame, true, &vad, &chunk_sink, &mut processed_samples)
+                                    sink.consume(frame, &mut processed_samples)
                                 });
                             }
                             Ok(AudioChunk::EndOfStream) => break,
@@ -540,9 +696,8 @@ pub(crate) fn run_consumer(
                         }
                     }
 
-                    frame_resampler.finish(&mut |frame: &[f32]| {
-                        handle_frame(frame, true, &vad, &chunk_sink, &mut processed_samples)
-                    });
+                    frame_resampler
+                        .finish(&mut |frame: &[f32]| sink.consume(frame, &mut processed_samples));
 
                     let _ = reply_tx.send(std::mem::take(&mut processed_samples));
 
@@ -555,6 +710,31 @@ pub(crate) fn run_consumer(
                     return;
                 }
             }
+        }
+
+        match sample_rx.recv_timeout(CMD_POLL) {
+            Ok(AudioChunk::Samples(raw)) => {
+                // ---------- spectrum processing ------------------------------ //
+                if let Some(buckets) = visualizer.feed(&raw) {
+                    if let Some(cb) = &level_cb {
+                        cb(buckets);
+                    }
+                }
+
+                // ---------- existing pipeline -------------------------------- //
+                // The resampler always runs (its rolling state must stay continuous for
+                // always-on mic mode); frames only reach the sink while recording.
+                let sink = &mut sink;
+                let out = &mut processed_samples;
+                frame_resampler.push(&raw, &mut |frame: &[f32]| {
+                    if recording {
+                        sink.consume(frame, out);
+                    }
+                });
+            }
+            Ok(AudioChunk::EndOfStream) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {} // no audio — still serve commands
+            Err(mpsc::RecvTimeoutError::Disconnected) => break, // stream closed
         }
     }
 }

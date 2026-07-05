@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Mic, Square, Users, AudioLines } from "lucide-react";
 import { commands, events } from "@/bindings";
+import { formatClock } from "@/utils/formatClock";
 
 /**
  * Sessions — the "graffetta" capture experience. One tap records a meeting (your mic + this
@@ -23,44 +24,65 @@ const MODES: { id: Mode; icon: typeof Mic; labelKey: string }[] = [
   { id: "system", icon: AudioLines, labelKey: "settings.sessions.modeSystem" },
 ];
 
-function formatElapsed(totalSeconds: number): string {
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
+const LIVE_LABEL_KEY: Record<Mode, string> = {
+  meeting: "settings.sessions.capturingMeeting",
+  mic: "settings.sessions.capturingMic",
+  system: "settings.sessions.capturingSystem",
+};
 
 export function SessionsSettings() {
   const { t } = useTranslation();
   const [active, setActive] = useState(false);
   const [mode, setMode] = useState<Mode>("meeting");
+  // What the running session actually captures, for the live label. Driven by the
+  // SessionStateChanged payload so tray/CLI-started sessions are labeled too.
+  const [liveMode, setLiveMode] = useState<Mode>("meeting");
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  // The mode a running session was started with — frozen while recording so the live label
-  // is truthful even if the (disabled) selector state drifts.
-  const activeModeRef = useRef<Mode>("meeting");
 
   useEffect(() => {
     commands.isSessionActive().then(setActive);
     const unlisten = events.sessionStateChanged.listen((event) => {
-      setActive(event.payload.active);
+      const { active: isActive, source } = event.payload;
+      setActive(isActive);
+      if (!isActive) {
+        // Reset so a later out-of-band start isn't labeled with a stale panel mode.
+        setLiveMode("meeting");
+        return;
+      }
+      // The payload's `source` is the session's *primary* track (session.rs): SystemAudio is
+      // unambiguous, but Mic-primary is either mic-only or a meeting (mic + system). The
+      // out-of-band Mic-primary starters (tray, --toggle-meeting) are meetings — the default —
+      // and a start from this panel already pinned the exact mode in `toggle`.
+      setLiveMode((prev) => (source === "SystemAudio" ? "system" : prev));
     });
     return () => {
       unlisten.then((fn) => fn());
     };
   }, []);
 
-  // Count up while recording (wall-clock from when this view saw the session go active).
+  // Count up while recording, anchored to the backend's true session start so
+  // mounting this view mid-session shows the real elapsed time.
   useEffect(() => {
     if (!active) {
       setElapsed(0);
       return;
     }
-    const startedAt = Date.now();
+    let cancelled = false;
+    let startedAt = Date.now();
+    commands.sessionElapsedMs().then((ms) => {
+      if (cancelled) return;
+      startedAt = Date.now() - (ms ?? 0);
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    });
     const id = setInterval(
       () => setElapsed(Math.floor((Date.now() - startedAt) / 1000)),
       250,
     );
-    return () => clearInterval(id);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [active]);
 
   const toggle = async () => {
@@ -71,23 +93,20 @@ export function SessionsSettings() {
         if (result.status === "error") toast.error(result.error);
         return;
       }
-      activeModeRef.current = mode;
+      // This panel knows exactly what it starts; the state event only refines it.
+      setLiveMode(mode);
       const result =
         mode === "meeting"
           ? await commands.startMeeting()
           : await commands.startSession(mode === "mic" ? "Mic" : "SystemAudio");
       if (result.status === "error") toast.error(result.error);
+    } catch (error) {
+      console.error("Failed to toggle session:", error);
+      toast.error(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
   };
-
-  const liveLabelKey =
-    activeModeRef.current === "meeting"
-      ? "settings.sessions.capturingMeeting"
-      : activeModeRef.current === "mic"
-        ? "settings.sessions.capturingMic"
-        : "settings.sessions.capturingSystem";
 
   return (
     <div className="max-w-3xl w-full mx-auto">
@@ -125,7 +144,7 @@ export function SessionsSettings() {
           {active ? (
             <>
               <span className="text-3xl font-semibold tabular-nums tracking-tight">
-                {formatElapsed(elapsed)}
+                {formatClock(elapsed)}
               </span>
               <span
                 className="flex items-center gap-2 text-sm text-text/70"
@@ -135,7 +154,7 @@ export function SessionsSettings() {
                   className="inline-block h-2 w-2 rounded-full bg-red-500"
                   style={{ animation: "session-rec-pulse 1.5s ease-in-out infinite" }}
                 />
-                {t(liveLabelKey)}
+                {t(LIVE_LABEL_KEY[liveMode])}
               </span>
             </>
           ) : (

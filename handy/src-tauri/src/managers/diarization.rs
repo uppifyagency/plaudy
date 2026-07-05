@@ -142,6 +142,12 @@ fn is_echo_text(a: &str, b: &str) -> bool {
 /// ponytail: cheap, no-DSP mitigation. The real fix is acoustic echo cancellation on the mic
 /// input (subtract the system reference signal) — the named upgrade path for clean speaker use.
 pub fn drop_bleed(segments: Vec<TimedSegment>, mic_label: &str) -> Vec<TimedSegment> {
+    /// A mic segment with fewer words than this is never dropped as echo: one-word utterances
+    /// ("okay", "yeah", "sì") are how a listener actually backchannels during a call, and the
+    /// overlapping remote speech very often contains that word somewhere — treating them as
+    /// echo deleted the user's own genuine speech from the transcript.
+    const MIN_ECHO_TOKENS: usize = 2;
+
     let is_mic = |s: &TimedSegment| s.speaker_label.as_deref() == Some(mic_label);
     let others: Vec<&TimedSegment> = segments.iter().filter(|s| !is_mic(s)).collect();
     segments
@@ -150,9 +156,16 @@ pub fn drop_bleed(segments: Vec<TimedSegment>, mic_label: &str) -> Vec<TimedSegm
             if !is_mic(seg) {
                 return true;
             }
+            if word_tokens(&seg.text).len() < MIN_ECHO_TOKENS {
+                return true;
+            }
             let echo = others.iter().any(|o| {
-                overlap_ms(seg.start_ms, seg.end_ms, o.start_ms, o.end_ms) > 0
-                    && is_echo_text(&seg.text, &o.text)
+                // An echo is time-aligned with its source, so require the overlap to cover a
+                // meaningful share (≥30%) of the mic segment — a 1 ms graze between adjacent
+                // segments is coincidence, not acoustic bleed.
+                let dur = (seg.end_ms - seg.start_ms).max(1);
+                let ov = overlap_ms(seg.start_ms, seg.end_ms, o.start_ms, o.end_ms);
+                ov * 10 >= dur * 3 && is_echo_text(&seg.text, &o.text)
             });
             !echo
         })
@@ -266,7 +279,10 @@ mod tests {
     #[test]
     fn segment_goes_to_the_speaker_it_overlaps_most() {
         // seg [800,1400): overlaps turn0 [0,1000) by 200ms, turn1 [1000,2000) by 400ms -> spk 1
-        let out = align(&[asr(800, 1400, "x")], &[turn(0, 1000, 0), turn(1000, 2000, 1)]);
+        let out = align(
+            &[asr(800, 1400, "x")],
+            &[turn(0, 1000, 0), turn(1000, 2000, 1)],
+        );
         assert_eq!(out[0].speaker_id, Some(1));
     }
 
@@ -355,7 +371,10 @@ mod tests {
         // A real meeting: you say something different from the remote speaker at the same time.
         let merged = merge_segments(vec![
             vec![me_seg(0, 1000, "i totally agree with that plan")],
-            align(&[asr(0, 1000, "let us review the budget")], &[turn(0, 1000, 0)]),
+            align(
+                &[asr(0, 1000, "let us review the budget")],
+                &[turn(0, 1000, 0)],
+            ),
         ]);
         assert_eq!(drop_bleed(merged, "Me").len(), 2);
     }
@@ -371,6 +390,53 @@ mod tests {
     }
 
     #[test]
+    fn drop_bleed_keeps_single_word_backchannel_during_remote_speech() {
+        // You say "okay" WHILE the remote speaker talks and their sentence contains "okay":
+        // that is you backchanneling, not acoustic bleed — your speech must survive.
+        let merged = merge_segments(vec![
+            vec![me_seg(500, 900, "okay")],
+            align(
+                &[asr(0, 3000, "okay so let us start with the budget")],
+                &[turn(0, 3000, 0)],
+            ),
+        ]);
+        let out = drop_bleed(merged, "Me");
+        assert_eq!(out.len(), 2, "a one-word backchannel is never echo");
+    }
+
+    #[test]
+    fn drop_bleed_requires_aligned_overlap_not_a_graze() {
+        // Same words, but the segments merely graze by 10 ms out of a 1s mic segment: an
+        // echo is time-aligned with its source, so this is coincidence and must be kept.
+        let merged = merge_segments(vec![
+            vec![me_seg(990, 2000, "great work everyone today")],
+            align(
+                &[asr(0, 1000, "great work everyone today")],
+                &[turn(0, 1000, 0)],
+            ),
+        ]);
+        assert_eq!(drop_bleed(merged, "Me").len(), 2);
+    }
+
+    #[test]
+    fn echo_text_threshold_is_seventy_percent_of_the_shorter_side() {
+        // Exactly 7 of the shorter side's 10 words shared → echo; 6 of 10 → not.
+        let long = "one two three four five six seven eight nine ten";
+        assert!(is_echo_text(
+            long,
+            "one two three four five six seven x y z"
+        ));
+        assert!(!is_echo_text(long, "one two three four five six a b c d"));
+    }
+
+    #[test]
+    fn echo_text_ignores_case_and_punctuation_and_rejects_empty() {
+        assert!(is_echo_text("Great, WORK!", "great work"));
+        assert!(!is_echo_text("", "anything"));
+        assert!(!is_echo_text("...", "anything")); // punctuation-only tokenizes to nothing
+    }
+
+    #[test]
     fn each_segment_keeps_its_own_timing_text_and_speaker() {
         let out = align(
             &[asr(0, 1000, "a"), asr(1000, 2000, "b")],
@@ -378,11 +444,21 @@ mod tests {
         );
         assert_eq!(out.len(), 2);
         assert_eq!(
-            (out[0].start_ms, out[0].end_ms, out[0].speaker_id, out[0].text.as_str()),
+            (
+                out[0].start_ms,
+                out[0].end_ms,
+                out[0].speaker_id,
+                out[0].text.as_str()
+            ),
             (0, 1000, Some(0), "a")
         );
         assert_eq!(
-            (out[1].start_ms, out[1].end_ms, out[1].speaker_id, out[1].text.as_str()),
+            (
+                out[1].start_ms,
+                out[1].end_ms,
+                out[1].speaker_id,
+                out[1].text.as_str()
+            ),
             (1000, 2000, Some(1), "b")
         );
     }

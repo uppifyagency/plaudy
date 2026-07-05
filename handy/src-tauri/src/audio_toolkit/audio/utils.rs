@@ -27,16 +27,28 @@ pub fn verify_wav_file<P: AsRef<Path>>(file_path: P, expected_samples: usize) ->
     Ok(())
 }
 
-/// Save audio samples as a WAV file
-pub fn save_wav_file<P: AsRef<Path>>(file_path: P, samples: &[f32]) -> Result<()> {
-    let spec = WavSpec {
+/// The archive format every recording uses: mono 16 kHz 16-bit PCM.
+fn archive_spec() -> WavSpec {
+    WavSpec {
         channels: 1,
         sample_rate: 16000,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
-    };
+    }
+}
 
-    let mut writer = WavWriter::create(file_path.as_ref(), spec)?;
+/// Incremental writer with the same spec as [`save_wav_file`] — for callers that stream
+/// samples (e.g. session finalize mixing multi-hour tracks chunk-by-chunk) instead of
+/// holding the whole recording in RAM.
+pub fn create_wav_writer<P: AsRef<Path>>(
+    file_path: P,
+) -> Result<WavWriter<std::io::BufWriter<std::fs::File>>> {
+    Ok(WavWriter::create(file_path.as_ref(), archive_spec())?)
+}
+
+/// Save audio samples as a WAV file
+pub fn save_wav_file<P: AsRef<Path>>(file_path: P, samples: &[f32]) -> Result<()> {
+    let mut writer = WavWriter::create(file_path.as_ref(), archive_spec())?;
 
     // Convert f32 samples to i16 for WAV
     for sample in samples {

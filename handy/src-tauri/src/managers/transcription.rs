@@ -748,10 +748,7 @@ impl TranscriptionManager {
     /// Transcribe and ALSO return per-segment timings for diarization. The flat text is the
     /// same post-processed transcript as `transcribe`; `segments` carry raw ASR text + ms
     /// timing (empty when the engine yields none — caller falls back to one whole-file segment).
-    pub fn transcribe_with_segments(
-        &self,
-        audio: Vec<f32>,
-    ) -> Result<(String, Vec<AsrSegment>)> {
+    pub fn transcribe_with_segments(&self, audio: Vec<f32>) -> Result<(String, Vec<AsrSegment>)> {
         self.transcribe_inner(audio)
     }
 }

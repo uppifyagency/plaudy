@@ -726,13 +726,20 @@ impl ModelManager {
                 continue;
             }
             let bundled = self.app_handle.path().resolve(
-                format!("resources/models/{}/{}", DiarizationManager::SUBDIR, filename),
+                format!(
+                    "resources/models/{}/{}",
+                    DiarizationManager::SUBDIR,
+                    filename
+                ),
                 tauri::path::BaseDirectory::Resource,
             );
             if let Ok(bundled) = bundled {
                 if bundled.exists() {
                     fs::create_dir_all(&dest_dir)?;
-                    info!("Installing bundled diarization model {} to user directory", filename);
+                    info!(
+                        "Installing bundled diarization model {} to user directory",
+                        filename
+                    );
                     fs::copy(&bundled, &user_path)?;
                 }
             }
@@ -1412,7 +1419,10 @@ impl ModelManager {
         for model in DIARIZATION_MODELS {
             let dest = dir.join(model.filename);
             if dest.exists() {
-                info!("Diarization model {} already present, skipping", model.filename);
+                info!(
+                    "Diarization model {} already present, skipping",
+                    model.filename
+                );
                 continue;
             }
             self.download_diarization_file(model, &dest).await?;
@@ -1425,7 +1435,11 @@ impl ModelManager {
 
     /// Download one bare `.onnx` to `dest`, verifying size + SHA256. Helper for
     /// `download_diarization_models`; deliberately minimal (no resume/cancel — see caller).
-    async fn download_diarization_file(&self, model: &DiarizationModelDl, dest: &Path) -> Result<()> {
+    async fn download_diarization_file(
+        &self,
+        model: &DiarizationModelDl,
+        dest: &Path,
+    ) -> Result<()> {
         let partial = self
             .models_dir
             .join(DiarizationManager::SUBDIR)
@@ -1433,7 +1447,10 @@ impl ModelManager {
         // No resume: always start the file fresh so a torn previous attempt can't corrupt it.
         let _ = fs::remove_file(&partial);
 
-        info!("Downloading diarization model {} from {}", model.filename, model.url);
+        info!(
+            "Downloading diarization model {} from {}",
+            model.filename, model.url
+        );
         let response = reqwest::Client::new().get(model.url).send().await?;
         if !response.status().is_success() {
             return Err(anyhow::anyhow!(
@@ -1820,12 +1837,25 @@ mod tests {
         // duplicate destination and no empty url/sha — a typo here means a download that
         // can never satisfy DiarizationManager::is_available().
         let dests: HashSet<&str> = DIARIZATION_MODELS.iter().map(|m| m.filename).collect();
-        assert_eq!(dests.len(), DIARIZATION_MODELS.len(), "duplicate dest filename");
+        assert_eq!(
+            dests.len(),
+            DIARIZATION_MODELS.len(),
+            "duplicate dest filename"
+        );
         assert!(dests.contains(DiarizationManager::SEG_FILE));
         assert!(dests.contains(DiarizationManager::EMB_FILE));
         for m in DIARIZATION_MODELS {
-            assert!(m.url.starts_with("https://"), "{} url must be https", m.filename);
-            assert_eq!(m.sha256.len(), 64, "{} sha256 must be 64 hex chars", m.filename);
+            assert!(
+                m.url.starts_with("https://"),
+                "{} url must be https",
+                m.filename
+            );
+            assert_eq!(
+                m.sha256.len(),
+                64,
+                "{} sha256 must be 64 hex chars",
+                m.filename
+            );
             assert!(m.size > 0, "{} size must be set", m.filename);
         }
     }

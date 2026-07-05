@@ -25,15 +25,16 @@ use objc2::runtime::AnyObject;
 use objc2::AllocAnyThread;
 
 use objc2_core_audio::{
-    AudioDeviceCreateIOProcIDWithBlock, AudioDeviceIOProcID, AudioDeviceStart, AudioDeviceStop,
-    AudioHardwareCreateAggregateDevice, AudioHardwareCreateProcessTap,
-    AudioHardwareDestroyAggregateDevice, AudioHardwareDestroyProcessTap, AudioObjectGetPropertyData,
-    AudioObjectID, AudioObjectPropertyAddress, CATapDescription, CATapMuteBehavior,
-    AudioDeviceDestroyIOProcID, kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal,
-    kAudioTapPropertyFormat,
+    kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioTapPropertyFormat,
+    AudioDeviceCreateIOProcIDWithBlock, AudioDeviceDestroyIOProcID, AudioDeviceIOProcID,
+    AudioDeviceStart, AudioDeviceStop, AudioHardwareCreateAggregateDevice,
+    AudioHardwareCreateProcessTap, AudioHardwareDestroyAggregateDevice,
+    AudioHardwareDestroyProcessTap, AudioObjectGetPropertyData, AudioObjectID,
+    AudioObjectPropertyAddress, CATapDescription, CATapMuteBehavior,
 };
 use objc2_core_audio_types::{
-    kAudioFormatFlagIsFloat, kAudioFormatLinearPCM, AudioBufferList, AudioStreamBasicDescription,
+    kAudioFormatFlagIsFloat, kAudioFormatFlagIsNonInterleaved, kAudioFormatLinearPCM,
+    AudioBufferList, AudioStreamBasicDescription,
 };
 use objc2_core_foundation::CFDictionary;
 use objc2_foundation::{NSArray, NSCopying, NSNumber, NSString, NSUUID};
@@ -129,8 +130,9 @@ impl SystemAudioRecorder {
         let tap_uid: Retained<NSString> = unsafe { desc.UUID().UUIDString() };
 
         let mut tap_id: AudioObjectID = 0;
-        let status =
-            unsafe { AudioHardwareCreateProcessTap(Some(&desc), &mut tap_id as *mut AudioObjectID) };
+        let status = unsafe {
+            AudioHardwareCreateProcessTap(Some(&desc), &mut tap_id as *mut AudioObjectID)
+        };
         if status != NO_ERR || tap_id == 0 {
             return Err(os_err("AudioHardwareCreateProcessTap", status));
         }
@@ -158,8 +160,7 @@ impl SystemAudioRecorder {
         let aggregate_uid = NSUUID::UUID().UUIDString();
         let dict = build_aggregate_description(&aggregate_uid, &tap_uid);
         // NSDictionary and CFDictionary are toll-free bridged.
-        let cf_dict: &CFDictionary =
-            unsafe { &*(Retained::as_ptr(&dict) as *const CFDictionary) };
+        let cf_dict: &CFDictionary = unsafe { &*(Retained::as_ptr(&dict) as *const CFDictionary) };
 
         let mut aggregate_id: AudioObjectID = 0;
         let status = unsafe {
@@ -188,17 +189,19 @@ impl SystemAudioRecorder {
         let worker = std::thread::spawn(move || {
             run_consumer(
                 in_sample_rate,
-                vad,
+                super::recorder::FrameSink::from_parts(chunk_sink, vad),
                 sample_rx,
                 cmd_rx,
                 level_cb,
-                chunk_sink,
                 stop_flag,
             );
         });
 
-        // 5. Build the realtime IOProc block. It only memcpys/downmixes and does a
-        //    non-blocking mpsc send — no locks or extra allocation.
+        // 5. Build the realtime IOProc block. It downmixes into a freshly allocated Vec and
+        //    does a non-blocking mpsc send — lock-free, but NOT allocation-free (the Vec and
+        //    the channel node allocate on the realtime thread; conventional for this codebase's
+        //    cpal path too, and a preallocated ring buffer is the named upgrade if audio ever
+        //    glitches under memory pressure).
         let block_stop = self.stop_flag.clone();
         // Latch so EndOfStream is emitted exactly once per stop (the block is `Fn`,
         // so this needs interior mutability rather than a `mut bool`).
@@ -236,23 +239,11 @@ impl SystemAudioRecorder {
                 let src = buffer.mData as *const f32;
                 let in_channels = buffer.mNumberChannels.max(1) as usize;
 
-                let mut out: Vec<f32>;
-                if in_channels <= 1 {
-                    out = Vec::with_capacity(sample_count);
-                    for i in 0..sample_count {
-                        out.push(unsafe { *src.add(i) });
-                    }
-                } else {
-                    let frames = sample_count / in_channels;
-                    out = Vec::with_capacity(frames);
-                    for f in 0..frames {
-                        let mut acc = 0.0f32;
-                        for c in 0..in_channels {
-                            acc += unsafe { *src.add(f * in_channels + c) };
-                        }
-                        out.push(acc / in_channels as f32);
-                    }
-                }
+                // Interleaved f32 validated once at startup by `read_tap_format`; reinterpret
+                // the CoreAudio buffer as a slice and share the recorder's mixdown.
+                let data = unsafe { std::slice::from_raw_parts(src, sample_count) };
+                let mut out: Vec<f32> = Vec::new();
+                super::recorder::downmix_interleaved(data, in_channels, &mut out);
 
                 let _ = sample_tx.send(AudioChunk::Samples(out));
             },
@@ -311,10 +302,10 @@ impl SystemAudioRecorder {
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::Stop(resp_tx))?;
         }
-        // The IOProc keeps streaming; run_consumer drains and replies. Unlike the
-        // cpal path there is no stop_flag handshake to inject EndOfStream, so push
-        // the sentinel from the worker side via Cmd::Stop's drain timeout.
-        Ok(resp_rx.recv()?)
+        // Same handshake as the cpal path: Cmd::Stop sets the shared stop_flag, the IOProc
+        // block sees it and injects EndOfStream once, and run_consumer's drain loop breaks on
+        // the sentinel (falling back to its drain timeout only if the IOProc has already died).
+        Ok(resp_rx.recv_timeout(super::recorder::STOP_REPLY_TIMEOUT)?)
     }
 
     pub fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -398,17 +389,23 @@ unsafe fn read_tap_format(
         NonNull::new(&mut asbd as *mut AudioStreamBasicDescription as *mut c_void).unwrap(),
     );
     if status != NO_ERR {
-        return Err(os_err("AudioObjectGetPropertyData(kAudioTapPropertyFormat)", status));
+        return Err(os_err(
+            "AudioObjectGetPropertyData(kAudioTapPropertyFormat)",
+            status,
+        ));
     }
-    // The IOProc reinterprets each buffer as interleaved 32-bit float PCM. Validate
-    // that assumption once here so an unexpected format fails cleanly at startup
-    // instead of silently type-punning bytes into garbage samples downstream.
+    // The IOProc reinterprets each buffer as INTERLEAVED 32-bit float PCM (it reads
+    // mBuffers[0] and downmixes by mNumberChannels). Validate the whole assumption once
+    // here — including that the format is NOT non-interleaved (one buffer per channel,
+    // which would silently record only channel 0) — so an unexpected format fails
+    // cleanly at startup instead of type-punning bytes into garbage samples downstream.
     if asbd.mFormatID != kAudioFormatLinearPCM
         || (asbd.mFormatFlags & kAudioFormatFlagIsFloat) == 0
+        || (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
         || asbd.mBitsPerChannel != 32
     {
         return Err(format!(
-            "Unexpected tap format (id={:#x}, flags={:#x}, bits={}); expected 32-bit float PCM",
+            "Unexpected tap format (id={:#x}, flags={:#x}, bits={}); expected interleaved 32-bit float PCM",
             asbd.mFormatID, asbd.mFormatFlags, asbd.mBitsPerChannel
         )
         .into());
@@ -428,10 +425,8 @@ fn build_aggregate_description(
     tap_uid: &NSString,
 ) -> Retained<objc2_foundation::NSDictionary<NSString, AnyObject>> {
     // Sub-tap entry: { uid: <tap uid>, drift: true }.
-    let sub_tap_keys: [&NSString; 2] =
-        [&NSString::from_str("uid"), &NSString::from_str("drift")];
-    let sub_tap_uid_val: Retained<AnyObject> =
-        unsafe { Retained::cast_unchecked(tap_uid.copy()) };
+    let sub_tap_keys: [&NSString; 2] = [&NSString::from_str("uid"), &NSString::from_str("drift")];
+    let sub_tap_uid_val: Retained<AnyObject> = unsafe { Retained::cast_unchecked(tap_uid.copy()) };
     let sub_tap_drift_val: Retained<AnyObject> =
         unsafe { Retained::cast_unchecked(NSNumber::numberWithBool(true)) };
     let sub_tap_values: [Retained<AnyObject>; 2] = [sub_tap_uid_val, sub_tap_drift_val];
@@ -450,8 +445,7 @@ fn build_aggregate_description(
         &NSString::from_str("private"),
         &NSString::from_str("taps"),
     ];
-    let uid_val: Retained<AnyObject> =
-        unsafe { Retained::cast_unchecked(aggregate_uid.copy()) };
+    let uid_val: Retained<AnyObject> = unsafe { Retained::cast_unchecked(aggregate_uid.copy()) };
     let private_val: Retained<AnyObject> =
         unsafe { Retained::cast_unchecked(NSNumber::numberWithBool(true)) };
     let taps_val: Retained<AnyObject> = unsafe { Retained::cast_unchecked(tap_list) };

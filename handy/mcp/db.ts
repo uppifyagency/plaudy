@@ -124,14 +124,15 @@ export interface SearchHit {
 
 /** Find sessions whose flat transcript OR any speaker segment contains `query` (case-insensitive). */
 export function searchSessions(db: Database, query: string, limit = 20): SearchHit[] {
-  const like = `%${query}%`;
+  // Escape LIKE metacharacters so "100%" or "snake_case" mean the literal text, not wildcards.
+  const like = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
   const rows = db
     .query(
       `SELECT DISTINCT h.id AS id, h.title AS title, h.timestamp AS timestamp,
                        h.transcription_text AS transcription_text
          FROM transcription_history h
          LEFT JOIN transcription_segments s ON s.history_id = h.id
-        WHERE h.transcription_text LIKE ? OR s.text LIKE ?
+        WHERE h.transcription_text LIKE ? ESCAPE '\\' OR s.text LIKE ? ESCAPE '\\'
         ORDER BY h.id DESC
         LIMIT ?`,
     )

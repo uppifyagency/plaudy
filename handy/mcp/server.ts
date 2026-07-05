@@ -10,6 +10,8 @@
 //
 // ponytail: the MCP stdio handshake is small and stable, so it is hand-rolled over bun:sqlite
 // rather than pulling the SDK — fewer deps, and it is verified by piping JSON-RPC at it.
+import type { Database } from "bun:sqlite";
+import { existsSync } from "fs";
 import {
   openDb,
   defaultDbPath,
@@ -21,7 +23,21 @@ import {
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "plaude-local", version: "0.1.0" };
 
-const db = openDb(defaultDbPath());
+// Open lazily, per tool call: a fresh machine has no history.db yet, and that must not
+// kill the process before the MCP initialize handshake — tools answer with a friendly
+// isError result instead.
+let db: Database | null = null;
+function getDb(): Database {
+  if (!db) {
+    const path = defaultDbPath();
+    if (!existsSync(path))
+      throw new Error(
+        `No recordings yet — the database does not exist (${path}). Record a session in Plaude Local first.`,
+      );
+    db = openDb(path);
+  }
+  return db;
+}
 
 const TOOLS = [
   {
@@ -65,27 +81,30 @@ function runTool(name: string, args: Record<string, unknown>): string {
   switch (name) {
     case "list_sessions":
       return JSON.stringify(
-        listSessions(db, num(args.limit, 20), num(args.offset, 0)),
+        listSessions(getDb(), num(args.limit, 20, 1, 100), num(args.offset, 0, 0)),
         null,
         2,
       );
     case "get_session": {
-      const s = getSession(db, num(args.id, 0));
+      const s = getSession(getDb(), num(args.id, 0, 0));
       return s ? JSON.stringify(s, null, 2) : `No session with id ${args.id}`;
     }
-    case "search_sessions":
-      return JSON.stringify(
-        searchSessions(db, String(args.query ?? ""), num(args.limit, 20)),
-        null,
-        2,
-      );
+    case "search_sessions": {
+      const query = String(args.query ?? "").trim();
+      if (!query)
+        throw new Error("Search query is empty — give me a word or phrase to look for.");
+      return JSON.stringify(searchSessions(getDb(), query, num(args.limit, 20, 1, 100)), null, 2);
+    }
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
 }
 
-function num(v: unknown, fallback: number): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+/** Coerce a tool argument to a clamped integer — SQLite treats LIMIT -1 as unlimited, so
+ *  raw passthrough is forbidden: limit lives in [1, 100], offset in [0, ∞). */
+function num(v: unknown, fallback: number, min: number, max = Infinity): number {
+  const n = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : fallback;
+  return Math.min(max, Math.max(min, n));
 }
 
 function send(msg: unknown): void {

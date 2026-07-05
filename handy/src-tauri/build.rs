@@ -151,8 +151,7 @@ fn build_apple_intelligence_bridge() {
     // FoundationModelsMacros Swift plugin that @Generable needs (full Xcode only), so the
     // framework's presence is a false positive on CLT. Escape hatch: HANDY_FORCE_AI_STUB=1
     // builds the stub. Upgrade path: install full Xcode, unset the var → real Apple Intelligence.
-    let has_foundation_models =
-        framework_path.exists() && env::var("HANDY_FORCE_AI_STUB").is_err();
+    let has_foundation_models = framework_path.exists() && env::var("HANDY_FORCE_AI_STUB").is_err();
 
     let source_file = if has_foundation_models {
         println!("cargo:warning=Building with Apple Intelligence support.");

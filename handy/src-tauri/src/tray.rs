@@ -71,23 +71,49 @@ pub fn get_icon_path(theme: AppTheme, state: TrayIconState) -> &'static str {
     }
 }
 
-pub fn change_tray_icon(app: &AppHandle, icon: TrayIconState) {
+/// Derive the icon actually shown from what a caller *requested* and the live session state.
+/// Callers only know their own flow (dictation says Idle when a dictation finishes) — but the
+/// ear must never disappear while a long-form session is still capturing: that icon is the
+/// product's honest "I'm listening" signal, so it is derived here, never trusted from a caller.
+fn resolve_tray_state(requested: TrayIconState, session_active: bool) -> TrayIconState {
+    match (requested, session_active) {
+        (TrayIconState::Idle, true) => TrayIconState::Listening,
+        (other, _) => other,
+    }
+}
+
+fn session_is_active(app: &AppHandle) -> bool {
+    app.try_state::<Arc<SessionManager>>()
+        .map(|sm| sm.is_active())
+        .unwrap_or(false)
+}
+
+pub fn change_tray_icon(app: &AppHandle, requested: TrayIconState) {
+    let session_active = session_is_active(app);
+    let state = resolve_tray_state(requested, session_active);
+
     let tray = app.state::<TrayIcon>();
     let theme = get_current_theme(app);
+    let icon_path = get_icon_path(theme, state.clone());
 
-    let icon_path = get_icon_path(theme, icon.clone());
+    // A missing/corrupt resource degrades to keeping the previous icon — never a panic
+    // mid-session over a PNG.
+    match app
+        .path()
+        .resolve(icon_path, tauri::path::BaseDirectory::Resource)
+    {
+        Ok(path) => match Image::from_path(&path) {
+            Ok(img) => {
+                let _ = tray.set_icon(Some(img));
+            }
+            Err(e) => error!("Failed to load tray icon {}: {e}", path.display()),
+        },
+        Err(e) => error!("Failed to resolve tray icon {icon_path}: {e}"),
+    }
 
-    let _ = tray.set_icon(Some(
-        Image::from_path(
-            app.path()
-                .resolve(icon_path, tauri::path::BaseDirectory::Resource)
-                .expect("failed to resolve"),
-        )
-        .expect("failed to set icon"),
-    ));
-
-    // Update menu based on state
-    update_tray_menu(app, &icon, None);
+    // Rebuild the menu from the SAME session snapshot the icon used, so the two can't
+    // disagree within one update (icon Idle + label "Stop recording").
+    update_tray_menu_with(app, &state, None, session_active);
 }
 
 pub fn tray_tooltip() -> String {
@@ -103,6 +129,30 @@ fn version_label() -> String {
 }
 
 pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&str>) {
+    let session_active = session_is_active(app);
+    let state = resolve_tray_state(state.clone(), session_active);
+    update_tray_menu_with(app, &state, locale, session_active);
+}
+
+fn update_tray_menu_with(
+    app: &AppHandle,
+    state: &TrayIconState,
+    locale: Option<&str>,
+    session_active: bool,
+) {
+    // Menu construction is fallible (i18n, model list, OS menu APIs) but never worth a
+    // panic: on error keep the previous menu and log.
+    if let Err(e) = build_and_set_tray_menu(app, state, locale, session_active) {
+        error!("Failed to rebuild tray menu; keeping the previous one: {e}");
+    }
+}
+
+fn build_and_set_tray_menu(
+    app: &AppHandle,
+    state: &TrayIconState,
+    locale: Option<&str>,
+    session_active: bool,
+) -> tauri::Result<()> {
     let settings = settings::get_settings(app);
 
     let locale = locale.unwrap_or(&settings.app_language);
@@ -116,36 +166,34 @@ pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&
 
     // Create common menu items
     let version_label = version_label();
-    let version_i = MenuItem::with_id(app, "version", &version_label, false, None::<&str>)
-        .expect("failed to create version item");
+    let version_i = MenuItem::with_id(app, "version", &version_label, false, None::<&str>)?;
     let settings_i = MenuItem::with_id(
         app,
         "settings",
         &strings.settings,
         true,
         settings_accelerator,
-    )
-    .expect("failed to create settings item");
+    )?;
     let check_updates_i = MenuItem::with_id(
         app,
         "check_updates",
         &strings.check_updates,
         settings.update_checks_enabled,
         None::<&str>,
-    )
-    .expect("failed to create check updates item");
+    )?;
     let copy_last_transcript_i = MenuItem::with_id(
         app,
         "copy_last_transcript",
         &strings.copy_last_transcript,
         true,
         None::<&str>,
-    )
-    .expect("failed to create copy last transcript item");
+    )?;
     let model_loaded = app.state::<Arc<TranscriptionManager>>().is_model_loaded();
-    let quit_i = MenuItem::with_id(app, "quit", &strings.quit, true, quit_accelerator)
-        .expect("failed to create quit item");
-    let separator = || PredefinedMenuItem::separator(app).expect("failed to create separator");
+    let quit_i = MenuItem::with_id(app, "quit", &strings.quit, true, quit_accelerator)?;
+    // Up to 6 separators per layout; build them fallibly once.
+    let seps = (0..6)
+        .map(|_| PredefinedMenuItem::separator(app))
+        .collect::<Result<Vec<_>, _>>()?;
 
     // Build model submenu — label is the active model name
     let model_manager = app.state::<Arc<ModelManager>>();
@@ -162,15 +210,13 @@ pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&
         .unwrap_or_else(|| strings.model.clone());
 
     let model_submenu = {
-        let submenu = Submenu::with_id(app, "model_submenu", &submenu_label, true)
-            .expect("failed to create model submenu");
+        let submenu = Submenu::with_id(app, "model_submenu", &submenu_label, true)?;
 
         for model in &downloaded {
             let is_active = model.id == *current_model_id;
             let item_id = format!("model_select:{}", model.id);
             let item =
-                CheckMenuItem::with_id(app, &item_id, &model.name, true, is_active, None::<&str>)
-                    .expect("failed to create model item");
+                CheckMenuItem::with_id(app, &item_id, &model.name, true, is_active, None::<&str>)?;
             let _ = submenu.append(&item);
         }
 
@@ -183,70 +229,65 @@ pub fn update_tray_menu(app: &AppHandle, state: &TrayIconState, locale: Option<&
         &strings.unload_model,
         model_loaded,
         None::<&str>,
-    )
-    .expect("failed to create unload model item");
+    )?;
 
     // Long-form session toggle — the menu-bar "graffetta": one click starts/stops a recording
-    // session. The label reflects live session state so it reads correctly however the session
-    // was toggled (tray, CLI, or the Sessions panel).
-    let session_active = app.state::<Arc<SessionManager>>().is_active();
+    // session. The label comes from the SAME session snapshot the caller resolved the icon
+    // with, so icon and label can never disagree within one update.
     let session_label = if session_active {
         &strings.stop_recording
     } else {
         &strings.start_recording
     };
     let toggle_session_i =
-        MenuItem::with_id(app, "toggle_session", session_label, true, None::<&str>)
-            .expect("failed to create session toggle item");
+        MenuItem::with_id(app, "toggle_session", session_label, true, None::<&str>)?;
 
     let menu = match state {
         TrayIconState::Recording | TrayIconState::Transcribing | TrayIconState::Listening => {
-            let cancel_i = MenuItem::with_id(app, "cancel", &strings.cancel, true, None::<&str>)
-                .expect("failed to create cancel item");
+            let cancel_i = MenuItem::with_id(app, "cancel", &strings.cancel, true, None::<&str>)?;
             Menu::with_items(
                 app,
                 &[
                     &version_i,
-                    &separator(),
+                    &seps[0],
                     &toggle_session_i,
-                    &separator(),
+                    &seps[1],
                     &cancel_i,
-                    &separator(),
+                    &seps[2],
                     &copy_last_transcript_i,
-                    &separator(),
+                    &seps[3],
                     &settings_i,
                     &check_updates_i,
-                    &separator(),
+                    &seps[4],
                     &quit_i,
                 ],
-            )
-            .expect("failed to create menu")
+            )?
         }
         TrayIconState::Idle => Menu::with_items(
             app,
             &[
                 &version_i,
-                &separator(),
+                &seps[0],
                 &toggle_session_i,
-                &separator(),
+                &seps[1],
                 &copy_last_transcript_i,
-                &separator(),
+                &seps[2],
                 &model_submenu,
                 &unload_model_i,
-                &separator(),
+                &seps[3],
                 &settings_i,
                 &check_updates_i,
-                &separator(),
+                &seps[4],
                 &quit_i,
             ],
-        )
-        .expect("failed to create menu"),
+        )?,
     };
 
     let tray = app.state::<TrayIcon>();
     let _ = tray.set_menu(Some(menu));
     let _ = tray.set_icon_as_template(true);
     let _ = tray.set_tooltip(Some(version_label));
+    Ok(())
 }
 
 fn last_transcript_text(entry: &HistoryEntry) -> &str {
@@ -313,6 +354,7 @@ mod tests {
             post_process_prompt: None,
             post_process_requested: false,
             status: TranscriptionStatus::Done,
+            source: crate::managers::history::EntrySource::Dictation,
         }
     }
 
@@ -326,5 +368,39 @@ mod tests {
     fn falls_back_to_raw_transcription() {
         let entry = build_entry("raw", None);
         assert_eq!(last_transcript_text(&entry), "raw");
+    }
+
+    use super::{resolve_tray_state, TrayIconState};
+
+    #[test]
+    fn dictation_going_idle_during_a_session_keeps_the_ear() {
+        // THE tray-honesty regression: a quick dictation finishing mid-session used to
+        // install Idle while the session was still capturing.
+        assert_eq!(
+            resolve_tray_state(TrayIconState::Idle, true),
+            TrayIconState::Listening
+        );
+    }
+
+    #[test]
+    fn idle_stays_idle_when_no_session_is_active() {
+        assert_eq!(
+            resolve_tray_state(TrayIconState::Idle, false),
+            TrayIconState::Idle
+        );
+    }
+
+    #[test]
+    fn active_dictation_states_may_override_the_ear_temporarily() {
+        // While a dictation is actually recording/transcribing, showing that state is
+        // honest too — Idle is the only request a live session must veto.
+        assert_eq!(
+            resolve_tray_state(TrayIconState::Recording, true),
+            TrayIconState::Recording
+        );
+        assert_eq!(
+            resolve_tray_state(TrayIconState::Transcribing, true),
+            TrayIconState::Transcribing
+        );
     }
 }

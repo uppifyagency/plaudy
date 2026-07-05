@@ -14,7 +14,7 @@ pub use recorder::{is_microphone_access_denied, is_no_input_device_error, AudioR
 pub use resampler::FrameResampler;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use system_audio::SystemAudioRecorder;
-pub use utils::{read_wav_samples, save_wav_file, verify_wav_file};
+pub use utils::{create_wav_writer, read_wav_samples, save_wav_file, verify_wav_file};
 pub use visualizer::AudioVisualiser;
 
 /// Tap-free "is some OTHER app playing audio?" sensor for seamless auto-capture. On macOS aarch64

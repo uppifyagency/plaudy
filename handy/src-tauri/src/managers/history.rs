@@ -60,6 +60,11 @@ static MIGRATIONS: &[M] = &[
     // on "transcribing". APPEND-ONLY. Default 'done' keeps every existing row and the
     // one-shot dictation path correct with zero code change.
     M::up("ALTER TABLE transcription_history ADD COLUMN status TEXT NOT NULL DEFAULT 'done';"),
+    // Which capture path produced the row ('dictation' | 'mic' | 'system' | 'meeting').
+    // Persisted at creation — the backend KNOWS the source — so the UI stops re-deriving it
+    // from magic speaker labels. Empty default = pre-migration row → the UI falls back to
+    // its old inference. APPEND-ONLY.
+    M::up("ALTER TABLE transcription_history ADD COLUMN source TEXT NOT NULL DEFAULT '';"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -102,13 +107,49 @@ impl TranscriptionStatus {
         }
     }
 
-    /// Map the stored string back. Unknown values degrade to `Done` (the column default)
-    /// so a hand-edited or future-schema DB never panics the read path.
+    /// Map the stored string back. A corrupted/unknown value must not masquerade as a
+    /// successful row — degrading to `Failed` keeps the retry affordance available.
     fn from_db(s: &str) -> Self {
         match s {
             "transcribing" => Self::Transcribing,
             "failed" => Self::Failed,
-            _ => Self::Done,
+            "done" => Self::Done,
+            _ => Self::Failed,
+        }
+    }
+}
+
+/// Which capture path produced a history row. Persisted at row creation (migration #7);
+/// `Unknown` covers pre-migration rows (the `''` column default), for which the UI falls back
+/// to its legacy label inference.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum EntrySource {
+    Dictation,
+    Mic,
+    System,
+    Meeting,
+    Unknown,
+}
+
+impl EntrySource {
+    fn as_db(self) -> &'static str {
+        match self {
+            Self::Dictation => "dictation",
+            Self::Mic => "mic",
+            Self::System => "system",
+            Self::Meeting => "meeting",
+            Self::Unknown => "",
+        }
+    }
+
+    fn from_db(s: &str) -> Self {
+        match s {
+            "dictation" => Self::Dictation,
+            "mic" => Self::Mic,
+            "system" => Self::System,
+            "meeting" => Self::Meeting,
+            _ => Self::Unknown,
         }
     }
 }
@@ -125,6 +166,7 @@ pub struct HistoryEntry {
     pub post_process_prompt: Option<String>,
     pub post_process_requested: bool,
     pub status: TranscriptionStatus,
+    pub source: EntrySource,
 }
 
 /// A persisted, speaker-attributed transcript segment — the read shape for the timeline UI.
@@ -137,6 +179,16 @@ pub struct PersistedSegment {
     pub text: String,
 }
 
+/// Lightweight per-entry segment summary for list views: distinct speaker labels (first-
+/// appearance order) and the timeline duration. One batched query per History page instead
+/// of a full-segment fetch per row (the old N+1 IPC).
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct SessionOverview {
+    pub history_id: i64,
+    pub speakers: Vec<String>,
+    pub duration_ms: i64,
+}
+
 /// Persist diarized segments for one history entry, in a single transaction. Creates one
 /// `speakers` row per distinct diarizer speaker index referenced by the segments (labelled
 /// "Speaker N", 1-based in first-seen order), then inserts the segments with the FK to those
@@ -144,11 +196,7 @@ pub struct PersistedSegment {
 ///
 /// Free function over `&mut Connection` (not a manager method) so it is unit-testable against
 /// an in-memory database without a Tauri `AppHandle`.
-fn write_segments(
-    conn: &mut Connection,
-    history_id: i64,
-    segments: &[TimedSegment],
-) -> Result<()> {
+fn write_segments(conn: &mut Connection, history_id: i64, segments: &[TimedSegment]) -> Result<()> {
     use std::collections::{BTreeMap, HashMap};
     let tx = conn.transaction()?;
     // Two independent speaker namespaces sharing one `speakers` table:
@@ -324,6 +372,53 @@ mod segment_persistence_tests {
     }
 
     #[test]
+    fn overviews_batch_distinct_speakers_and_max_duration_per_entry() {
+        let mut conn = in_memory_db(); // migration seeds entry id 1
+        conn.execute(
+            "INSERT INTO transcription_history (file_name, timestamp, saved, title, transcription_text)
+             VALUES ('s2.wav', 1, 0, 't2', 'x')",
+            [],
+        )
+        .unwrap();
+
+        let seg = |start_ms, end_ms, speaker_id, label: Option<&str>, text: &str| TimedSegment {
+            start_ms,
+            end_ms,
+            speaker_id,
+            speaker_label: label.map(Into::into),
+            text: text.into(),
+        };
+        write_segments(
+            &mut conn,
+            1,
+            &[
+                seg(0, 1000, None, Some("Me"), "hi"),
+                seg(1000, 2500, Some(0), None, "hello"),
+                seg(2500, 4000, Some(0), None, "again"), // same speaker → no duplicate label
+            ],
+        )
+        .unwrap();
+        write_segments(&mut conn, 2, &[seg(0, 700, None, None, "unknown voice")]).unwrap();
+
+        let overviews = HistoryManager::overviews_conn(&conn, &[1, 2, 999]).unwrap();
+
+        assert_eq!(overviews.len(), 2, "absent ids simply produce no overview");
+        assert_eq!(overviews[0].history_id, 1);
+        assert_eq!(overviews[0].speakers, vec!["Me", "Speaker 1"]);
+        assert_eq!(overviews[0].duration_ms, 4000);
+        assert_eq!(overviews[1].history_id, 2);
+        assert!(
+            overviews[1].speakers.is_empty(),
+            "unknown speakers add no label"
+        );
+        assert_eq!(overviews[1].duration_ms, 700);
+
+        assert!(HistoryManager::overviews_conn(&conn, &[])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn status_column_defaults_to_done_and_round_trips_every_variant() {
         // in_memory_db() inserts one row via migration #6's column default (no `status` listed).
         let conn = in_memory_db();
@@ -335,7 +430,10 @@ mod segment_persistence_tests {
             )
             .unwrap();
         assert_eq!(stored, "done");
-        assert_eq!(TranscriptionStatus::from_db(&stored), TranscriptionStatus::Done);
+        assert_eq!(
+            TranscriptionStatus::from_db(&stored),
+            TranscriptionStatus::Done
+        );
 
         for st in [
             TranscriptionStatus::Transcribing,
@@ -344,8 +442,12 @@ mod segment_persistence_tests {
         ] {
             assert_eq!(TranscriptionStatus::from_db(st.as_db()), st);
         }
-        // Unknown / future values degrade to Done rather than panicking the read path.
-        assert_eq!(TranscriptionStatus::from_db("garbage"), TranscriptionStatus::Done);
+        // Unknown / future values degrade to Failed (not Done): a corrupted status must
+        // not present as a successful row, and Failed keeps the retry affordance alive.
+        assert_eq!(
+            TranscriptionStatus::from_db("garbage"),
+            TranscriptionStatus::Failed
+        );
     }
 
     #[test]
@@ -430,7 +532,9 @@ mod segment_persistence_tests {
             .unwrap();
 
         let segs: i64 = conn
-            .query_row("SELECT COUNT(*) FROM transcription_segments", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM transcription_segments", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         let spk: i64 = conn
             .query_row("SELECT COUNT(*) FROM speakers", [], |r| r.get(0))
@@ -572,8 +676,19 @@ impl HistoryManager {
         // speakers/segments. SQLite defaults this OFF per connection. No-op for the
         // pre-existing FK-free tables.
         conn.pragma_update(None, "foreign_keys", true)?;
+        // This codebase writes from several threads by design (session finalize runs
+        // off-thread while dictation/cleanup/deletes hit the main path). Without a busy
+        // handler a colliding write fails instantly with SQLITE_BUSY; WAL lets readers
+        // proceed under a writer. journal_mode is persistent but setting it is idempotent.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        let _: String =
+            conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
         Ok(conn)
     }
+
+    /// The columns `map_history_entry` reads — one place instead of seven copies of the
+    /// SELECT list. Adding a column = this constant + the mapper + a migration.
+    const HISTORY_COLUMNS: &'static str = "id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, status, source";
 
     fn map_history_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
         Ok(HistoryEntry {
@@ -587,6 +702,7 @@ impl HistoryManager {
             post_process_prompt: row.get("post_process_prompt")?,
             post_process_requested: row.get("post_process_requested")?,
             status: TranscriptionStatus::from_db(&row.get::<_, String>("status")?),
+            source: EntrySource::from_db(&row.get::<_, String>("source")?),
         })
     }
 
@@ -608,6 +724,7 @@ impl HistoryManager {
             file_name,
             transcription_text,
             TranscriptionStatus::Done,
+            EntrySource::Dictation,
             post_process_requested,
             post_processed_text,
             post_process_prompt,
@@ -617,22 +734,29 @@ impl HistoryManager {
     /// Save a placeholder row in `Transcribing` state for a long-form session, so it shows
     /// in History the moment the user stops — before the (slow) transcription completes.
     /// `finalize` then calls `update_transcription(..)` to fill it in and flip the status.
-    pub fn save_pending_entry(&self, file_name: String) -> Result<HistoryEntry> {
+    pub fn save_pending_entry(
+        &self,
+        file_name: String,
+        source: EntrySource,
+    ) -> Result<HistoryEntry> {
         self.insert_entry(
             file_name,
             String::new(),
             TranscriptionStatus::Transcribing,
+            source,
             false,
             None,
             None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_entry(
         &self,
         file_name: String,
         transcription_text: String,
         status: TranscriptionStatus,
+        source: EntrySource,
         post_process_requested: bool,
         post_processed_text: Option<String>,
         post_process_prompt: Option<String>,
@@ -651,8 +775,9 @@ impl HistoryManager {
                 post_processed_text,
                 post_process_prompt,
                 post_process_requested,
-                status
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                status,
+                source
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 &file_name,
                 timestamp,
@@ -663,6 +788,7 @@ impl HistoryManager {
                 &post_process_prompt,
                 post_process_requested,
                 status.as_db(),
+                source.as_db(),
             ],
         )?;
 
@@ -677,6 +803,7 @@ impl HistoryManager {
             post_process_prompt,
             post_process_requested,
             status,
+            source,
         };
 
         debug!("Saved history entry with id {}", entry.id);
@@ -708,6 +835,52 @@ impl HistoryManager {
         read_segments(&conn, history_id)
     }
 
+    /// Batched list-view summaries for a page of entries — see [`SessionOverview`].
+    /// Entries with no segments are simply absent from the result.
+    pub fn get_session_overviews(&self, ids: &[i64]) -> Result<Vec<SessionOverview>> {
+        let conn = self.get_connection()?;
+        Self::overviews_conn(&conn, ids)
+    }
+
+    fn overviews_conn(conn: &Connection, ids: &[i64]) -> Result<Vec<SessionOverview>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT s.history_id, sp.label, s.end_ms
+             FROM transcription_segments s
+             LEFT JOIN speakers sp ON sp.id = s.speaker_id
+             WHERE s.history_id IN ({placeholders})
+             ORDER BY s.history_id, s.id"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+
+        let mut map: std::collections::BTreeMap<i64, SessionOverview> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            let (id, label, end_ms) = row?;
+            let overview = map.entry(id).or_insert_with(|| SessionOverview {
+                history_id: id,
+                speakers: Vec::new(),
+                duration_ms: 0,
+            });
+            if let Some(label) = label {
+                if !overview.speakers.contains(&label) {
+                    overview.speakers.push(label);
+                }
+            }
+            overview.duration_ms = overview.duration_ms.max(end_ms);
+        }
+        Ok(map.into_values().collect())
+    }
+
     /// Self-healing: at startup, mark any session left mid-`transcribing` (its finalize died
     /// with a previous process) as `failed`, so it never pulses "transcribing" forever and the
     /// History retry icon can re-run it. Call once before `recover_interrupted`.
@@ -732,6 +905,38 @@ impl HistoryManager {
         status: TranscriptionStatus,
     ) -> Result<HistoryEntry> {
         let conn = self.get_connection()?;
+        let entry = Self::update_transcription_conn(
+            &conn,
+            id,
+            transcription_text,
+            post_processed_text,
+            post_process_prompt,
+            status,
+        )?;
+
+        debug!("Updated transcription for history entry {}", id);
+
+        if let Err(e) = (HistoryUpdatePayload::Updated {
+            entry: entry.clone(),
+        })
+        .emit(&self.app_handle)
+        {
+            error!("Failed to emit history-updated event: {}", e);
+        }
+
+        Ok(entry)
+    }
+
+    /// The `transcribing → done/failed` status flip on a borrowed connection
+    /// (unit-testable without an AppHandle). Errors when the row doesn't exist.
+    fn update_transcription_conn(
+        conn: &Connection,
+        id: i64,
+        transcription_text: String,
+        post_processed_text: Option<String>,
+        post_process_prompt: Option<String>,
+        status: TranscriptionStatus,
+    ) -> Result<HistoryEntry> {
         let updated = conn.execute(
             "UPDATE transcription_history
              SET transcription_text = ?1,
@@ -752,24 +957,14 @@ impl HistoryManager {
             return Err(anyhow!("History entry {} not found", id));
         }
 
-        let entry = conn
-            .query_row(
-                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, status
-                 FROM transcription_history WHERE id = ?1",
-                params![id],
-                Self::map_history_entry,
-            )?;
-
-        debug!("Updated transcription for history entry {}", id);
-
-        if let Err(e) = (HistoryUpdatePayload::Updated {
-            entry: entry.clone(),
-        })
-        .emit(&self.app_handle)
-        {
-            error!("Failed to emit history-updated event: {}", e);
-        }
-
+        let entry = conn.query_row(
+            &format!(
+                "SELECT {} FROM transcription_history WHERE id = ?1",
+                Self::HISTORY_COLUMNS
+            ),
+            params![id],
+            Self::map_history_entry,
+        )?;
         Ok(entry)
     }
 
@@ -777,19 +972,14 @@ impl HistoryManager {
         let retention_period = crate::settings::get_recording_retention_period(&self.app_handle);
 
         match retention_period {
-            crate::settings::RecordingRetentionPeriod::Never => {
-                // Don't delete anything
-                return Ok(());
-            }
+            // Don't delete anything
+            crate::settings::RecordingRetentionPeriod::Never => Ok(()),
+            // Count-based logic with history_limit
             crate::settings::RecordingRetentionPeriod::PreserveLimit => {
-                // Use the old count-based logic with history_limit
-                let limit = crate::settings::get_history_limit(&self.app_handle);
-                return self.cleanup_by_count(limit);
+                self.cleanup_by_count(crate::settings::get_history_limit(&self.app_handle))
             }
-            _ => {
-                // Use time-based logic
-                return self.cleanup_by_time(retention_period);
-            }
+            // Time-based logic
+            _ => self.cleanup_by_time(retention_period),
         }
     }
 
@@ -802,53 +992,69 @@ impl HistoryManager {
         let mut deleted_count = 0;
 
         for (id, file_name) in entries {
-            // Delete database entry
             conn.execute(
                 "DELETE FROM transcription_history WHERE id = ?1",
                 params![id],
             )?;
+            // Count row deletions, not file deletions: a row whose WAV was already gone is
+            // still an entry removed, and the old file-based count logged "0 cleaned" lies.
+            deleted_count += 1;
 
-            // Delete WAV file
             let file_path = self.recordings_dir.join(file_name);
             if file_path.exists() {
                 if let Err(e) = fs::remove_file(&file_path) {
                     error!("Failed to delete WAV file {}: {}", file_name, e);
                 } else {
                     debug!("Deleted old WAV file: {}", file_name);
-                    deleted_count += 1;
                 }
+            }
+
+            // The list UI must hear about retention deletions too, not only manual ones —
+            // otherwise every sweep silently leaves stale rows on screen.
+            if let Err(e) = (HistoryUpdatePayload::Deleted { id: *id }).emit(&self.app_handle) {
+                error!("Failed to emit history-updated event: {}", e);
             }
         }
 
         Ok(deleted_count)
     }
 
+    /// Unsaved entries beyond the newest `limit` (count-based retention), on a borrowed
+    /// connection so the boundary (`saved = 1` exemption, exactly-`limit` no-op) is testable.
+    fn entries_beyond_count(conn: &Connection, limit: usize) -> Result<Vec<(i64, String)>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, file_name FROM transcription_history
+             WHERE saved = 0 ORDER BY timestamp DESC LIMIT -1 OFFSET ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Unsaved entries strictly older than `cutoff_timestamp` (time-based retention).
+    fn entries_older_than(conn: &Connection, cutoff_timestamp: i64) -> Result<Vec<(i64, String)>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, file_name FROM transcription_history WHERE saved = 0 AND timestamp < ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![cutoff_timestamp], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     fn cleanup_by_count(&self, limit: usize) -> Result<()> {
         let conn = self.get_connection()?;
-
-        // Get all entries that are not saved, ordered by timestamp desc
-        let mut stmt = conn.prepare(
-            "SELECT id, file_name FROM transcription_history WHERE saved = 0 ORDER BY timestamp DESC"
-        )?;
-
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>("id")?, row.get::<_, String>("file_name")?))
-        })?;
-
-        let mut entries: Vec<(i64, String)> = Vec::new();
-        for row in rows {
-            entries.push(row?);
+        let entries_to_delete = Self::entries_beyond_count(&conn, limit)?;
+        drop(conn);
+        let deleted_count = self.delete_entries_and_files(&entries_to_delete)?;
+        if deleted_count > 0 {
+            debug!("Cleaned up {} old history entries by count", deleted_count);
         }
-
-        if entries.len() > limit {
-            let entries_to_delete = &entries[limit..];
-            let deleted_count = self.delete_entries_and_files(entries_to_delete)?;
-
-            if deleted_count > 0 {
-                debug!("Cleaned up {} old history entries by count", deleted_count);
-            }
-        }
-
         Ok(())
     }
 
@@ -867,29 +1073,15 @@ impl HistoryManager {
             _ => unreachable!("Should not reach here"),
         };
 
-        // Get all unsaved entries older than the cutoff timestamp
-        let mut stmt = conn.prepare(
-            "SELECT id, file_name FROM transcription_history WHERE saved = 0 AND timestamp < ?1",
-        )?;
-
-        let rows = stmt.query_map(params![cutoff_timestamp], |row| {
-            Ok((row.get::<_, i64>("id")?, row.get::<_, String>("file_name")?))
-        })?;
-
-        let mut entries_to_delete: Vec<(i64, String)> = Vec::new();
-        for row in rows {
-            entries_to_delete.push(row?);
-        }
-
+        let entries_to_delete = Self::entries_older_than(&conn, cutoff_timestamp)?;
+        drop(conn);
         let deleted_count = self.delete_entries_and_files(&entries_to_delete)?;
-
         if deleted_count > 0 {
             debug!(
                 "Cleaned up {} old history entries based on retention period",
                 deleted_count
             );
         }
-
         Ok(())
     }
 
@@ -906,20 +1098,20 @@ impl HistoryManager {
             .replace('%', "\\%")
             .replace('_', "\\_");
         let pattern = format!("%{}%", escaped);
-        let mut stmt = conn.prepare(
-            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, status
-             FROM transcription_history
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM transcription_history
              WHERE transcription_text LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\'
              ORDER BY id DESC
              LIMIT ?2",
-        )?;
+            Self::HISTORY_COLUMNS
+        ))?;
         let rows = stmt
             .query_map(params![pattern, limit as i64], Self::map_history_entry)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
-    pub async fn search_history_entries(
+    pub fn search_history_entries(
         &self,
         query: &str,
         limit: Option<usize>,
@@ -928,81 +1120,50 @@ impl HistoryManager {
         Self::search_entries_conn(&conn, query, limit.unwrap_or(50).min(100))
     }
 
-    pub async fn get_history_entries(
+    pub fn get_history_entries(
         &self,
         cursor: Option<i64>,
         limit: Option<usize>,
     ) -> Result<PaginatedHistory> {
         let conn = self.get_connection()?;
-        let limit = limit.map(|l| l.min(100));
+        Self::get_entries_conn(&conn, cursor, limit)
+    }
 
-        let mut entries: Vec<HistoryEntry> = match (cursor, limit) {
-            (Some(cursor_id), Some(lim)) => {
-                let fetch_count = (lim + 1) as i64;
-                let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, status
-                     FROM transcription_history
-                     WHERE id < ?1
-                     ORDER BY id DESC
-                     LIMIT ?2",
-                )?;
-                let result = stmt
-                    .query_map(params![cursor_id, fetch_count], Self::map_history_entry)?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                result
-            }
-            (None, Some(lim)) => {
-                let fetch_count = (lim + 1) as i64;
-                let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, status
-                     FROM transcription_history
-                     ORDER BY id DESC
-                     LIMIT ?1",
-                )?;
-                let result = stmt
-                    .query_map(params![fetch_count], Self::map_history_entry)?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                result
-            }
-            (_, None) => {
-                let mut stmt = conn.prepare(
-                    "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, status
-                     FROM transcription_history
-                     ORDER BY id DESC",
-                )?;
-                let result = stmt
-                    .query_map([], Self::map_history_entry)?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                result
-            }
-        };
+    /// Cursor pagination on a borrowed connection (unit-testable without an AppHandle).
+    /// One query covers all cases: a NULL cursor/limit disables its clause. `limit: None`
+    /// means "everything" — expressed as SQLite's `LIMIT -1` (no limit); a present limit is
+    /// clamped to 100 and over-fetched by 1 to derive `has_more`.
+    fn get_entries_conn(
+        conn: &Connection,
+        cursor: Option<i64>,
+        limit: Option<usize>,
+    ) -> Result<PaginatedHistory> {
+        let limit = limit.map(|l| l.min(100));
+        let fetch = limit.map(|l| (l + 1) as i64).unwrap_or(-1);
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM transcription_history
+             WHERE (?1 IS NULL OR id < ?1)
+             ORDER BY id DESC
+             LIMIT ?2",
+            Self::HISTORY_COLUMNS
+        ))?;
+        let mut entries = stmt
+            .query_map(params![cursor, fetch], Self::map_history_entry)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         let has_more = limit.is_some_and(|lim| entries.len() > lim);
         if has_more {
             entries.pop();
         }
-
         Ok(PaginatedHistory { entries, has_more })
     }
 
     #[cfg(test)]
     fn get_latest_entry_with_conn(conn: &Connection) -> Result<Option<HistoryEntry>> {
-        let mut stmt = conn.prepare(
-            "SELECT
-                id,
-                file_name,
-                timestamp,
-                saved,
-                title,
-                transcription_text,
-                post_processed_text,
-                post_process_prompt,
-                post_process_requested,
-                status
-             FROM transcription_history
-             ORDER BY timestamp DESC
-             LIMIT 1",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM transcription_history ORDER BY timestamp DESC LIMIT 1",
+            Self::HISTORY_COLUMNS
+        ))?;
 
         let entry = stmt.query_row([], Self::map_history_entry).optional()?;
         Ok(entry)
@@ -1015,45 +1176,21 @@ impl HistoryManager {
     }
 
     fn get_latest_completed_entry_with_conn(conn: &Connection) -> Result<Option<HistoryEntry>> {
-        let mut stmt = conn.prepare(
-            "SELECT
-                id,
-                file_name,
-                timestamp,
-                saved,
-                title,
-                transcription_text,
-                post_processed_text,
-                post_process_prompt,
-                post_process_requested,
-                status
-             FROM transcription_history
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM transcription_history
              WHERE transcription_text != ''
              ORDER BY timestamp DESC
              LIMIT 1",
-        )?;
+            Self::HISTORY_COLUMNS
+        ))?;
 
         let entry = stmt.query_row([], Self::map_history_entry).optional()?;
         Ok(entry)
     }
 
-    pub async fn toggle_saved_status(&self, id: i64) -> Result<()> {
+    pub fn toggle_saved_status(&self, id: i64) -> Result<()> {
         let conn = self.get_connection()?;
-
-        // Get current saved status
-        let current_saved: bool = conn.query_row(
-            "SELECT saved FROM transcription_history WHERE id = ?1",
-            params![id],
-            |row| row.get("saved"),
-        )?;
-
-        let new_saved = !current_saved;
-
-        conn.execute(
-            "UPDATE transcription_history SET saved = ?1 WHERE id = ?2",
-            params![new_saved, id],
-        )?;
-
+        let new_saved = Self::toggle_saved_conn(&conn, id)?;
         debug!("Toggled saved status for entry {}: {}", id, new_saved);
 
         // Emit history updated event
@@ -1064,53 +1201,56 @@ impl HistoryManager {
         Ok(())
     }
 
+    /// Atomic flip on a borrowed connection: one UPDATE, no read-then-write race between two
+    /// rapid toggles. Returns the new value; errors when the row doesn't exist.
+    fn toggle_saved_conn(conn: &Connection, id: i64) -> Result<bool> {
+        conn.query_row(
+            "UPDATE transcription_history SET saved = NOT saved WHERE id = ?1 RETURNING saved",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("History entry {} not found", id))
+    }
+
     pub fn get_audio_file_path(&self, file_name: &str) -> PathBuf {
         self.recordings_dir.join(file_name)
     }
 
-    pub async fn get_entry_by_id(&self, id: i64) -> Result<Option<HistoryEntry>> {
+    pub fn get_entry_by_id(&self, id: i64) -> Result<Option<HistoryEntry>> {
         let conn = self.get_connection()?;
-        let mut stmt = conn.prepare(
-            "SELECT
-                id,
-                file_name,
-                timestamp,
-                saved,
-                title,
-                transcription_text,
-                post_processed_text,
-                post_process_prompt,
-                post_process_requested,
-                status
-             FROM transcription_history
-             WHERE id = ?1",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM transcription_history WHERE id = ?1",
+            Self::HISTORY_COLUMNS
+        ))?;
 
         let entry = stmt.query_row([id], Self::map_history_entry).optional()?;
 
         Ok(entry)
     }
 
-    pub async fn delete_entry(&self, id: i64) -> Result<()> {
+    pub fn delete_entry(&self, id: i64) -> Result<()> {
         let conn = self.get_connection()?;
 
-        // Get the entry to find the file name
-        if let Some(entry) = self.get_entry_by_id(id).await? {
-            // Delete the audio file first
-            let file_path = self.get_audio_file_path(&entry.file_name);
+        // One connection, row first: DELETE ... RETURNING hands back the file name, and the
+        // audio file is only removed once the row is gone — a failed DB delete can never
+        // orphan-delete the recording it still points to.
+        let file_name: Option<String> = conn
+            .query_row(
+                "DELETE FROM transcription_history WHERE id = ?1 RETURNING file_name",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(file_name) = file_name {
+            let file_path = self.get_audio_file_path(&file_name);
             if file_path.exists() {
                 if let Err(e) = fs::remove_file(&file_path) {
-                    error!("Failed to delete audio file {}: {}", entry.file_name, e);
-                    // Continue with database deletion even if file deletion fails
+                    error!("Failed to delete audio file {}: {}", file_name, e);
                 }
             }
         }
-
-        // Delete from database
-        conn.execute(
-            "DELETE FROM transcription_history WHERE id = ?1",
-            params![id],
-        )?;
 
         debug!("Deleted history entry with id: {}", id);
 
@@ -1151,7 +1291,8 @@ mod tests {
                 post_processed_text TEXT,
                 post_process_prompt TEXT,
                 post_process_requested BOOLEAN NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'done'
+                status TEXT NOT NULL DEFAULT 'done',
+                source TEXT NOT NULL DEFAULT ''
             );",
         )
         .expect("create transcription_history table");
@@ -1218,5 +1359,142 @@ mod tests {
 
         assert_eq!(entry.timestamp, 100);
         assert_eq!(entry.transcription_text, "completed");
+    }
+
+    fn set_saved(conn: &Connection, id: i64) {
+        conn.execute(
+            "UPDATE transcription_history SET saved = 1 WHERE id = ?1",
+            params![id],
+        )
+        .expect("mark entry saved");
+    }
+
+    fn ids(entries: &[HistoryEntry]) -> Vec<i64> {
+        entries.iter().map(|e| e.id).collect()
+    }
+
+    #[test]
+    fn pagination_over_fetches_to_derive_has_more_and_trims() {
+        let conn = setup_conn();
+        for ts in 1..=5 {
+            insert_entry(&conn, ts, "x", None); // ids 1..=5
+        }
+
+        let page1 = HistoryManager::get_entries_conn(&conn, None, Some(2)).unwrap();
+        assert_eq!(ids(&page1.entries), vec![5, 4]);
+        assert!(page1.has_more);
+
+        let page2 = HistoryManager::get_entries_conn(&conn, Some(4), Some(2)).unwrap();
+        assert_eq!(ids(&page2.entries), vec![3, 2]);
+        assert!(page2.has_more);
+
+        let page3 = HistoryManager::get_entries_conn(&conn, Some(2), Some(2)).unwrap();
+        assert_eq!(ids(&page3.entries), vec![1]);
+        assert!(!page3.has_more, "a short final page must not claim more");
+    }
+
+    #[test]
+    fn pagination_exactly_limit_rows_has_no_more() {
+        // The off-by-one magnet: exactly `limit` rows must NOT report has_more.
+        let conn = setup_conn();
+        for ts in 1..=3 {
+            insert_entry(&conn, ts, "x", None);
+        }
+        let page = HistoryManager::get_entries_conn(&conn, None, Some(3)).unwrap();
+        assert_eq!(page.entries.len(), 3);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn pagination_without_limit_returns_everything() {
+        let conn = setup_conn();
+        for ts in 1..=5 {
+            insert_entry(&conn, ts, "x", None);
+        }
+        let page = HistoryManager::get_entries_conn(&conn, None, None).unwrap();
+        assert_eq!(page.entries.len(), 5);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn toggle_saved_flips_atomically_and_errors_on_missing_row() {
+        let conn = setup_conn();
+        insert_entry(&conn, 1, "x", None);
+
+        assert!(HistoryManager::toggle_saved_conn(&conn, 1).unwrap());
+        assert!(!HistoryManager::toggle_saved_conn(&conn, 1).unwrap());
+        assert!(HistoryManager::toggle_saved_conn(&conn, 999).is_err());
+    }
+
+    #[test]
+    fn retention_by_count_spares_saved_and_exact_limit_is_a_noop() {
+        let conn = setup_conn();
+        for ts in 1..=5 {
+            insert_entry(&conn, ts, "x", None); // ids 1..=5, newest = highest ts
+        }
+        set_saved(&conn, 1); // oldest entry is pinned by the user
+
+        // Exactly `limit` unsaved entries → nothing to delete.
+        assert!(HistoryManager::entries_beyond_count(&conn, 4)
+            .unwrap()
+            .is_empty());
+
+        // limit 2 keeps the 2 newest unsaved (5, 4); 3 and 2 fall off; 1 is saved → exempt.
+        let doomed = HistoryManager::entries_beyond_count(&conn, 2).unwrap();
+        let doomed_ids: Vec<i64> = doomed.iter().map(|(id, _)| *id).collect();
+        assert_eq!(doomed_ids, vec![3, 2]);
+    }
+
+    #[test]
+    fn retention_by_time_uses_strict_cutoff_and_spares_saved() {
+        let conn = setup_conn();
+        insert_entry(&conn, 100, "old", None); // id 1
+        insert_entry(&conn, 200, "old-but-saved", None); // id 2
+        insert_entry(&conn, 300, "at-cutoff", None); // id 3
+        set_saved(&conn, 2);
+
+        let doomed = HistoryManager::entries_older_than(&conn, 300).unwrap();
+        let doomed_ids: Vec<i64> = doomed.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            doomed_ids,
+            vec![1],
+            "saved rows are exempt; timestamp == cutoff survives (strict <)"
+        );
+    }
+
+    #[test]
+    fn update_transcription_fills_row_flips_status_and_errors_on_missing() {
+        let conn = setup_conn();
+        insert_entry(&conn, 100, "", None);
+        conn.execute(
+            "UPDATE transcription_history SET status = 'transcribing' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+
+        let entry = HistoryManager::update_transcription_conn(
+            &conn,
+            1,
+            "final text".into(),
+            None,
+            None,
+            TranscriptionStatus::Done,
+        )
+        .unwrap();
+        assert_eq!(entry.transcription_text, "final text");
+        assert_eq!(entry.status, TranscriptionStatus::Done);
+
+        assert!(
+            HistoryManager::update_transcription_conn(
+                &conn,
+                999,
+                String::new(),
+                None,
+                None,
+                TranscriptionStatus::Done,
+            )
+            .is_err(),
+            "updating a missing row must surface, not silently no-op"
+        );
     }
 }

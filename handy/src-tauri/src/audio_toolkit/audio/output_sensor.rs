@@ -184,6 +184,8 @@ mod tests {
     }
 
     /// Positive path: an external process (afplay) emitting audio must trigger the sensor.
+    /// Poll-until-timeout rather than a single 600 ms sample — afplay can be slow to open
+    /// the output device, and one early read made this test flaky.
     #[test]
     #[ignore = "manual: needs live CoreAudio + audio output device"]
     fn live_external_afplay_triggers() {
@@ -191,11 +193,22 @@ mod tests {
             .arg("/System/Library/Sounds/Submarine.aiff")
             .spawn()
             .expect("spawn afplay");
-        std::thread::sleep(std::time::Duration::from_millis(600));
 
-        let active = external_output_active();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut active = false;
+        while std::time::Instant::now() < deadline {
+            if external_output_active() {
+                active = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+
         let _ = child.kill();
         let _ = child.wait();
-        assert!(active, "afplay playing must read as external audio");
+        assert!(
+            active,
+            "afplay playing must read as external audio within 5 s"
+        );
     }
 }

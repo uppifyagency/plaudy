@@ -782,6 +782,13 @@ async stopSession() : Promise<Result<null, string>> {
 async isSessionActive() : Promise<boolean> {
     return await TAURI_INVOKE("is_session_active");
 },
+/**
+ * Milliseconds since the active session began capturing (None when idle). Lets the Sessions
+ * view show the true elapsed time when it mounts mid-session instead of restarting at 0:00.
+ */
+async sessionElapsedMs() : Promise<number | null> {
+    return await TAURI_INVOKE("session_elapsed_ms");
+},
 async setModelUnloadTimeout(timeout: ModelUnloadTimeout) : Promise<void> {
     await TAURI_INVOKE("set_model_unload_timeout", { timeout });
 },
@@ -812,6 +819,18 @@ async getHistoryEntries(cursor: number | null, limit: number | null) : Promise<R
 /**
  * Workstation search: literal substring match over transcript + title, newest first.
  */
+/**
+ * Batched list-view summaries (speakers + duration) for a page of entries — one IPC call per
+ * History page instead of a full-segment fetch per row.
+ */
+async getSessionOverviews(ids: number[]) : Promise<Result<SessionOverview[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_session_overviews", { ids }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async searchHistoryEntries(query: string, limit: number | null) : Promise<Result<HistoryEntry[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("search_history_entries", { query, limit }) };
@@ -928,7 +947,13 @@ export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
 export type CustomSounds = { start: boolean; stop: boolean }
 export type EngineType = "Whisper" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
 export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
-export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; status: TranscriptionStatus }
+/**
+ * Which capture path produced a history row. Persisted at row creation (migration #7);
+ * `Unknown` covers pre-migration rows (the `''` column default), for which the UI falls back
+ * to its legacy label inference.
+ */
+export type EntrySource = "dictation" | "mic" | "system" | "meeting" | "unknown"
+export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; status: TranscriptionStatus; source: EntrySource }
 export type HistoryUpdatePayload = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
 /**
  * Result of changing keyboard implementation
@@ -946,6 +971,11 @@ export type ModelLoadStatus = { is_loaded: boolean; current_model: string | null
 export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "min_10" | "min_15" | "hour_1" | "sec_15"
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
 export type OverlayPosition = "none" | "top" | "bottom"
+/**
+ * Lightweight per-entry segment summary for list views: distinct speaker labels (first-
+ * appearance order) and the timeline duration.
+ */
+export type SessionOverview = { history_id: number; speakers: string[]; duration_ms: number }
 export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
 export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_shift_v" | "external_script"
 export type PermissionAccess = "allowed" | "denied" | "unknown"

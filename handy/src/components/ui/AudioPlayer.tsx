@@ -1,26 +1,22 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Play, Pause } from "lucide-react";
+import { formatClock } from "@/utils/formatClock";
 
 interface AudioPlayerProps {
-  /** Audio source URL. If not provided, onLoadRequest must be provided. */
-  src?: string;
   /** Called when play is clicked and no src is loaded yet. Should return the audio URL. */
-  onLoadRequest?: () => Promise<string | null>;
+  onLoadRequest: () => Promise<string | null>;
   className?: string;
-  autoPlay?: boolean;
 }
 
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({
-  src: initialSrc,
   onLoadRequest,
   className = "",
-  autoPlay = false,
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
-  const [loadedSrc, setLoadedSrc] = useState<string | null>(initialSrc ?? null);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -107,27 +103,21 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     };
   }, []);
 
-  // Auto-play when src becomes available (via onLoadRequest or autoPlay prop)
+  // Auto-play when the lazily requested src becomes available
   const prevLoadedSrc = useRef<string | null>(null);
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
     // Play when loadedSrc changes from null to a value (lazy load case)
-    if (loadedSrc && !prevLoadedSrc.current && onLoadRequest) {
-      audio.play().catch((error) => {
-        console.error("Auto-play failed:", error);
-      });
-    }
-    // Or when autoPlay is set with initial src
-    else if (autoPlay && initialSrc && !prevLoadedSrc.current) {
+    if (loadedSrc && !prevLoadedSrc.current) {
       audio.play().catch((error) => {
         console.error("Auto-play failed:", error);
       });
     }
 
     prevLoadedSrc.current = loadedSrc;
-  }, [loadedSrc, autoPlay, initialSrc, onLoadRequest]);
+  }, [loadedSrc]);
 
   // Global drag handlers
   const handleMouseUp = useCallback(() => {
@@ -171,7 +161,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         audio.pause();
       } else {
         // If no src loaded yet, request it
-        if (!src && onLoadRequest) {
+        if (!src) {
           setIsLoading(true);
           const newSrc = await onLoadRequest();
           setIsLoading(false);
@@ -179,7 +169,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             setLoadedSrc(newSrc);
             // Playback will be triggered by the useEffect watching loadedSrc
           }
-        } else if (src) {
+        } else {
           await audio.play();
         }
       }
@@ -204,14 +194,6 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
   const handleSliderTouchStart = () => {
     setIsDragging(true);
-  };
-
-  const formatTime = (time: number): string => {
-    if (!isFinite(time)) return "0:00";
-
-    const minutes = Math.floor(time / 60);
-    const seconds = Math.floor(time % 60);
-    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
   };
 
   // Fix playhead positioning with better edge case handling
@@ -246,7 +228,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
       <div className="flex-1 flex items-center gap-2">
         <span className="text-xs text-text/60 min-w-[30px] tabular-nums">
-          {formatTime(currentTime)}
+          {formatClock(currentTime)}
         </span>
 
         <input
@@ -265,7 +247,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         />
 
         <span className="text-xs text-text/60 min-w-[30px] tabular-nums">
-          {formatTime(duration)}
+          {formatClock(duration)}
         </span>
       </div>
     </div>

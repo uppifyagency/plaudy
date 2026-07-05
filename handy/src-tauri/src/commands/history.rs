@@ -16,7 +16,6 @@ pub async fn get_history_entries(
 ) -> Result<PaginatedHistory, String> {
     history_manager
         .get_history_entries(cursor, limit)
-        .await
         .map_err(|e| e.to_string())
 }
 
@@ -31,7 +30,20 @@ pub async fn search_history_entries(
 ) -> Result<Vec<crate::managers::history::HistoryEntry>, String> {
     history_manager
         .search_history_entries(&query, limit.map(|l| l as usize))
-        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Batched list-view summaries (speakers + duration) for a page of entries — one IPC call per
+/// History page instead of a full-segment fetch per row.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_session_overviews(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+    ids: Vec<i64>,
+) -> Result<Vec<crate::managers::history::SessionOverview>, String> {
+    history_manager
+        .get_session_overviews(&ids)
         .map_err(|e| e.to_string())
 }
 
@@ -58,7 +70,6 @@ pub async fn toggle_history_entry_saved(
 ) -> Result<(), String> {
     history_manager
         .toggle_saved_status(id)
-        .await
         .map_err(|e| e.to_string())
 }
 
@@ -82,10 +93,7 @@ pub async fn delete_history_entry(
     history_manager: State<'_, Arc<HistoryManager>>,
     id: i64,
 ) -> Result<(), String> {
-    history_manager
-        .delete_entry(id)
-        .await
-        .map_err(|e| e.to_string())
+    history_manager.delete_entry(id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -98,7 +106,6 @@ pub async fn retry_history_entry_transcription(
 ) -> Result<(), String> {
     let entry = history_manager
         .get_entry_by_id(id)
-        .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("History entry {} not found", id))?;
 

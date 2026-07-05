@@ -39,3 +39,11 @@ pub fn stop_session(app: AppHandle) -> Result<(), String> {
 pub fn is_session_active(app: AppHandle) -> bool {
     app.state::<Arc<SessionManager>>().is_active()
 }
+
+/// Milliseconds since the active session began capturing (None when idle). Lets the Sessions
+/// view show the true elapsed time when it mounts mid-session instead of restarting at 0:00.
+#[tauri::command]
+#[specta::specta]
+pub fn session_elapsed_ms(app: AppHandle) -> Option<u32> {
+    app.state::<Arc<SessionManager>>().elapsed_ms()
+}
