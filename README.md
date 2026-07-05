@@ -20,8 +20,6 @@ Your Mac records the room, transcribes it, separates the speakers, and hands the
 
 **Plaudy** is an open-source, on-device alternative to Plaud / Otter / Fireflies for **macOS**. One click — or fully hands-free — captures a meeting: your **microphone** *and* the Mac's **system audio** (the other side of the call), as two streams. It lands as a single, **speaker-attributed transcript** you can play back, search, and summarize with **your own Claude** over a local bridge. Built on the excellent [Handy](https://github.com/cjpais/Handy).
 
-> 📸 *Screenshots: drop yours into `docs/screenshots/` and they'll appear here — the History "session cards" and the menu-bar ear are the money shots.*
-
 ---
 
 ## Why Plaudy?
@@ -102,22 +100,30 @@ bun tauri build                           # … or build Plaudy.app + Plaudy_*.d
 
 ---
 
-## Plaudy vs the alternatives
+## Plaudy vs the cloud tools
 
-| | **👂 Plaudy** | Plaud / Otter / Fireflies *(cloud)* | Meetily *(open-source)* |
-| --- | :---: | :---: | :---: |
-| Runs **fully on-device** | ✅ | ❌ uploads to their servers | ⚠️ local, but runs a backend server |
-| **Account** required | ❌ none | ✅ | ❌ |
-| Audio **leaves your machine** | ❌ never | ✅ always | ❌ (if self-hosted) |
-| **Who said what** (diarization) | ✅ on-device, per-segment timeline | ✅ (in their cloud) | ⚠️ varies |
-| **System-audio** capture | ✅ native Process Tap, no extra driver | n/a | ⚠️ varies by setup |
-| **AI** summaries | 🤖 *your* AI via local MCP | their cloud LLM | bundled local/cloud LLM |
-| **Architecture** | single native macOS app | SaaS | app **+** server |
-| **Price** | free · open-source | subscription | free · open-source |
+The category Plaudy replaces is the **cloud recorder** — Plaud, Otter, Fireflies — where convenience costs you privacy:
 
-<sub>Comparison based on publicly available information as of 2026 and each project's stated defaults. Something wrong? Open a PR — we'd rather be accurate than flattering.</sub>
+| | **👂 Plaudy** | Plaud · Otter · Fireflies *(cloud)* |
+| --- | :---: | :---: |
+| Runs fully **on-device** | ✅ | ❌ uploaded to their servers |
+| **Account** required | ❌ none | ✅ |
+| Your **audio** leaves the machine | ❌ never | ✅ always |
+| **Who said what** (diarization) | ✅ on-device, per-segment timeline | ✅ (in their cloud) |
+| **System-audio** capture | ✅ native CoreAudio Process Tap, no virtual driver | n/a |
+| **AI** summaries | 🤖 *your* AI via local MCP — your account, your data | their cloud LLM, their servers |
+| **Price** | free · open-source (MIT) | subscription |
 
-**The one-line difference:** cloud tools give you AI at the cost of privacy; other local tools give you privacy at the cost of polish and a server to run. Plaudy is a **single native app that keeps your audio on the Mac *and* plugs into the AI you already pay for.**
+### …and vs Meetily (the closest open-source peer)
+
+Credit where due: **[Meetily](https://github.com/Zackriya-Solutions/meetily)** is an excellent, mature, MIT-licensed local meeting assistant — also Rust + Tauri, Parakeet/Whisper, 100% local. We won't pretend we're strictly "better"; we make **different bets**:
+
+- **Where Meetily leads today:** real-time *live* transcription, **Windows & Linux** support, a larger community, and built-in summarization providers.
+- **Where Plaudy is different:** **on-device speaker diarization in the free/open build** (Meetily's is a PRO / "coming soon" feature); an **[MCP](https://modelcontextprotocol.io) bridge** so any AI *agent* (Claude Code) can search & summarize your whole library programmatically — not just an in-app summary button; and a **push-to-talk dictation** heritage (built on [Handy](https://github.com/cjpais/Handy)) for quick notes, not only meetings.
+
+Want live transcription on Windows? Meetily. Want a Mac-native, agent-connected recorder with open diarization? Plaudy.
+
+<sub>Comparison based on each project's public docs as of July 2026. Wrong or out of date? Open a PR — we'd rather be accurate than flattering.</sub>
 
 ---
 
