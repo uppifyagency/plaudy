@@ -38,3 +38,5 @@ id_rsa*
 # ── Stray model PROBE downloads loose in src-tauri/ (NOT the bundled models,
 #    which live under resources/models/diarization/ and ARE committed) ──
 /handy/src-tauri/*.onnx
+.vercel
+.env*
