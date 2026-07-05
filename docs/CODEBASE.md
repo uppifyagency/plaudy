@@ -102,6 +102,52 @@ The product thesis: one click captures **both sides of a conversation** — the 
 
 ---
 
+## 5b. Seamless auto‑capture — per‑process trigger + supervisor (live‑validated E2E 2026‑07‑05)
+
+The "it just works" layer: the app quietly senses when **another app** is playing audio (a call, a meeting) and records it as a meeting session with no click. **Opt‑in** (`auto_capture_enabled`, default `false`) until a real‑meeting validation; the menu‑bar icon becomes an **ear** (`TrayIconState::Listening`, `resources/tray_listening.png`) whenever any session records — the honest signal.
+
+Three layers, strictly separated (all `unsafe` in the sensor; all decisions pure):
+
+```
+output_sensor.rs (FFI, macOS)  →  AutoCaptureDecider (pure)  →  run_supervisor (I/O shell)  →  SessionManager
+   "who is emitting audio?"        debounced start/stop           probation · cooldown · manual‑respect
+```
+
+### Sensor — [audio_toolkit/audio/output_sensor.rs](../handy/src-tauri/src/audio_toolkit/audio/output_sensor.rs)
+- **`external_output_active() -> bool`** — true iff **any process other than ours** is emitting audio. Composition: `list_process_output()` (FFI snapshot) → `any_external_output(procs, own_pid)` (pure, unit‑tested).
+- FFI: enumerates CoreAudio **process objects** — `kAudioHardwarePropertyProcessObjectList` on the system object (id 1), then per object `kAudioProcessPropertyPID` and `kAudioProcessPropertyIsRunningOutput`. All via `objc2_core_audio` (already a dependency; constants included — no hand‑rolled FourCCs, no new crates). Same macOS 14.4+ floor as the process tap. Plain property reads: **no tap, no TCC permission, no recording indicator**.
+- **Why per‑process (the v1 post‑mortem):** v1 read the *device‑level* `kAudioDevicePropertyDeviceIsRunningSomewhere` on the default output device. From inside this app, once our own tap had **ever** been opened, that flag reads "running" **forever** → 17/17 idle auto‑starts were empty false‑starts and the trigger was shelved. Per‑process attribution + **own‑PID exclusion** removes the root cause *by construction*: we cannot wake ourselves. (Approach spotted dormant in Meetily's `system_detector.rs`; reimplemented clean‑room on raw `objc2_core_audio`.)
+- Error posture: any OSStatus error → empty list → `false` → auto‑capture simply never triggers (safe default). Non‑macOS: stub `false` ([audio/mod.rs](../handy/src-tauri/src/audio_toolkit/audio/mod.rs)).
+- Tests: 4 pure unit tests (incl. `our_own_output_never_triggers` — the old bug, pinned) + **2 ignored live‑acceptance tests** (`cargo test --lib output_sensor -- --ignored --test-threads=1`): own tap open + silent machine → stays `false`; external `afplay` → `true`. Both passed on this machine 2026‑07‑05.
+
+### Brain — [managers/auto_capture.rs](../handy/src-tauri/src/managers/auto_capture.rs) `AutoCaptureDecider`
+Pure state machine `Idle → Arming → Capturing → Trailing`, fed `(audio_present, dt)` per tick, returns `AutoAction::{None, StartCapture, StopCapture}`. Debounce both ways: a blip shorter than `start_after` never starts; a gap shorter than `stop_after` never splits one conversation into many. 6 unit tests. `wants_capture()`/`reset()` let the shell reconcile with manual toggles.
+
+### Supervisor — `run_supervisor` (same file; spawned from `lib.rs`)
+Polls the sensor, runs the decider, drives `SessionManager`. Guarantees:
+- **Opt‑in gate:** setting off → idles (and cancels a session it had started).
+- **Never fights manual control:** stands down whenever a session it didn't start is active; only auto‑stops sessions it auto‑started.
+- **Probation** (defense in depth, kept even though the sensor no longer false‑triggers): an auto‑started session must show captured system‑audio RMS (`session.system_audio_heard()`) within `PROBATION`, else `session.cancel()` discards it — **no junk History rows**.
+- **START vs STOP signals differ deliberately:** START = per‑process sensor; STOP = captured‑audio silence (`session.system_audio_idle() < 800ms` means "still audible"). A meeting app holds its output stream open even while nobody talks, so "is the app outputting" cannot detect the end of a call — captured silence can.
+- **Cooldown** after any auto session ends (finalized or discarded) before sensing resumes.
+- When it fires it records a **meeting** (`[Mic, SystemAudio]`) — the mic only ever joins a session that system audio triggered; bare‑mic auto‑record stays a separate explicit opt‑in (privacy posture).
+
+### Parameters (single place: consts atop `auto_capture.rs`)
+| Const | Value | Meaning / rationale |
+| --- | --- | --- |
+| `POLL_INTERVAL` | 250 ms | sensor sampling period (property reads are ~free) |
+| `START_AFTER` | 1200 ms | audio must persist before auto‑start — rejects notification pings |
+| `STOP_AFTER` | 4 s | captured silence before auto‑finalize — tolerates pauses in a call |
+| `PROBATION` | 2000 ms | auto session must hear real audio or be discarded |
+| `COOLDOWN` | 8 s | stand‑down after any auto session ends (post‑teardown settle) |
+| in‑session presence | `system_audio_idle() < 800 ms` | "still audible" threshold on the captured track |
+| `auto_capture_enabled` | `false` | opt‑in gate ([settings.rs](../handy/src-tauri/src/settings.rs); serde default + explicit `get_default_settings()` constructor — update **both** when touching settings) |
+
+### E2E evidence (2026‑07‑05, this machine)
+Setting temporarily on → app `--start-hidden` → quiet: no trigger → external `afplay` ≈8 s: auto‑start ≈1.4 s in (`session started (probation)`) → `real audio confirmed` → inter‑sound gaps absorbed by `Trailing` → silence → `speakers quiet → session finalized` → `history.db` **row 79**, status `done`, both tracks 172 800 samples (10.8 s @16 kHz), empty transcript (system *sound*, no speech — correct). Setting restored to `false` afterwards.
+
+---
+
 ## 6. Fase 2 — speaker diarization + the dual‑stream merge ("who said what")
 
 Built **domain‑first** (pure logic tested in isolation, then adapters around it).
@@ -206,6 +252,8 @@ CREATE INDEX idx_segments_history ON transcription_segments(history_id);
 | Event | `historyUpdatePayload` | `added`/`updated`/`deleted`/`toggled` |
 | CLI | `--toggle-session` / `--toggle-system-session` | single source (mic / system) |
 | CLI | `--toggle-meeting` | dual mic + system — the graffetta action, for scripting/headless |
+| Setting | `auto_capture_enabled` | opt‑in gate for the seamless auto‑capture supervisor (§5b); default `false` |
+| Tray state | `TrayIconState::Listening` | ear icon while any session records (honest signal); dictation keeps the dot |
 
 CLI flags forward to a running primary via the single‑instance plugin (`lib.rs`); all routes converge on `SessionManager`.
 
@@ -220,6 +268,9 @@ CLI flags forward to a running primary via the single‑instance plugin (`lib.rs
 | `src-tauri/src/audio_toolkit/audio/system_audio.rs` | CoreAudio Process Tap system‑audio recorder (Fase 1) |
 | `src-tauri/src/managers/diarization.rs` | `align` + `label_segments` + `merge_segments` pure core + `DiarizationManager` |
 | `src-tauri/src/commands/session.rs` | `start_session` / `start_meeting` / `stop_session` / `is_session_active` |
+| `src-tauri/src/managers/auto_capture.rs` | Seamless auto‑capture: pure `AutoCaptureDecider` + `run_supervisor` shell (§5b) |
+| `src-tauri/src/audio_toolkit/audio/output_sensor.rs` | Per‑process "who is emitting audio?" sensor, own PID excluded (§5b) |
+| `resources/tray_listening.png` | The menu‑bar ear (SF Symbol render) |
 | `resources/models/diarization/{segmentation,embedding}.onnx` | Bundled diarization models |
 | `handy/mcp/{db,server}.ts`, `db.test.ts`, `package.json`, `README.md` | Local MCP server |
 | `.mcp.json` (repo root) | Registers the MCP server for Claude Code |
@@ -252,7 +303,9 @@ export CMAKE_POLICY_VERSION_MINIMUM=3.5 HANDY_FORCE_AI_STUB=1
 cd handy
 
 bun tauri dev                       # full app (regenerates bindings.ts)
-cd src-tauri && cargo test --lib    # 92 unit tests (align/merge/mix/drop_bleed, persistence+status, sessions, …)
+cd src-tauri && cargo test --lib    # 102 unit tests (align/merge/mix/drop_bleed, persistence+status, sessions, decider, sensor, …)
+# + 2 ignored live‑acceptance tests for the auto‑capture sensor (real CoreAudio):
+#   cargo test --lib output_sensor -- --ignored --test-threads=1
 cd ../mcp && bun test               # 4 MCP query tests
 cargo check --lib                   # fast type‑check     |    bun run lint   (i18n enforced)
 ```
@@ -273,6 +326,8 @@ App data: `~/Library/Application Support/com.pais.handy/` (`history.db`, `record
 3. **An ASR model must be resident at `finalize`.** Diarization+transcription only run when `is_model_loaded()`; the model unloads on its idle timer, so a long gap before capturing yields an empty (but `done`) row. Keep `unload_timeout ≠ Immediately`, or warm it with one dictation first.
 4. **Drop the lock before emitting a re‑entrant event** (the start‑path deadlock, §5a) — the listener runs inline and re‑locks the manager.
 5. **Bindings‑export is dev‑only and non‑fatal** (logs and continues on a read‑only CWD).
+6. **Never gate auto‑capture on the device‑level "running" flag.** `kAudioDevicePropertyDeviceIsRunningSomewhere` reads perpetually true inside this app once our tap has ever been opened (proved live: 17/17 empty false‑starts). Use the per‑process sensor (§5b) — and keep probation as the second net.
+7. **Adding a settings field takes two edits:** the `#[serde(default)]` attribute *and* the explicit field in `get_default_settings()` (`settings.rs`). Forgetting the second compiles the serde path but ships wrong defaults for fresh installs.
 
 ---
 
@@ -280,8 +335,9 @@ App data: `~/Library/Application Support/com.pais.handy/` (`history.db`, `record
 
 | Item | Notes |
 | --- | --- |
+| **Auto‑capture: real‑meeting validation → flip default** | The trigger is fixed and E2E‑validated with synthetic audio (§5b). Validate once on a real Zoom/Meet call with speech, then decide whether `auto_capture_enabled` defaults to `true`. Optional refinement: an app **allowlist** (`kAudioProcessPropertyBundleID` is one more property read in `output_sensor.rs`) so only meeting apps trigger. |
 | **Acoustic echo cancellation (AEC)** | `drop_bleed` removes the speaker‑bleed *duplicate* in the transcript, but the mic still *records* the echo into the mixed WAV. True AEC (subtract the system reference from the mic input, in `recorder.rs`/`session.rs`) would clean the audio itself and let `Me` capture only your voice even on speakers. Headphones sidestep it entirely today. |
-| **History‑as‑result polish** | Capture panel is focused/modern; a richer session‑card view (summary, duration, play) would make the *result* as beautiful as the capture. |
+| **AI title/summary — via MCP (decided 2026‑07‑05)** | No local LLM sidecar. The local MCP server is the path: the user's/client's own agents call `get_session` and produce title/summary on demand with their own subscription. Optional future: persist an agent‑produced title back (would need a tiny write surface or a sidecar table — currently MCP is read‑only by contract). |
 | **Diarization download button** | Command exists; needs a UI home in the Sessions view (bundling already covers fresh clones). |
 | **Installable app** | `tauri build` release binary works; a signed/notarized `.app`/`.dmg` needs full Xcode. |
 | **iPhone target** | No iOS upstream. Recommended: iPhone‑as‑capture + Mac‑as‑brain over Apple's nearby transfer (MultipeerConnectivity / Network.framework peer‑to‑peer), dropping files into the recordings dir for the existing finalize pipeline. Needs full Xcode. |
@@ -289,4 +345,4 @@ App data: `~/Library/Application Support/com.pais.handy/` (`history.db`, `record
 
 ---
 
-*Last updated 2026‑06‑23. Entry‑point: [HANDOFF.md](HANDOFF.md). Line‑cited Fase 2 forensics: [HANDOFF-FASE2.md](HANDOFF-FASE2.md). riffado teardown verdict: [DECISIONS.md](DECISIONS.md).*
+*Last updated 2026‑07‑05 (added §5b seamless auto‑capture; 102 tests). Entry‑point: [HANDOFF.md](HANDOFF.md). Line‑cited forensics: [HANDOFF-FASE2.md](HANDOFF-FASE2.md) (Fase 2), [HANDOFF-AUTOCAPTURE.md](HANDOFF-AUTOCAPTURE.md) (auto‑capture trigger). riffado teardown verdict: [DECISIONS.md](DECISIONS.md).*

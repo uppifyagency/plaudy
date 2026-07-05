@@ -1,5 +1,7 @@
 # Plaude Local — Onboarding per Gianni (in-depth, aggiornato 2026‑06‑23)
 
+> **⚠️ ADDENDUM 2026‑07‑05 — leggi anche [HANDOFF-AUTOCAPTURE.md](HANDOFF-AUTOCAPTURE.md).** Due punti di questo documento sono superati: (1) il trigger auto‑capture **non è più accantonato** — sensore per‑processo CoreAudio (PID nostro escluso), validato E2E live, ora **102 test Rust**; il pivot mic‑VAD è retrocesso a fallback opzionale (la saga in §4 è storia, non stato). (2) La decisione AI title/summary (§12 di HANDOFF.md) è **risolta: la via è l'MCP locale** — gli agent del cliente/utente riassumono on‑demand col proprio abbonamento; niente sidecar LLM.
+
 Benvenuto Gianni 👋. Questo documento è scritto per farti **partire produttivo oggi**: stato reale, come si builda, mappa del codice, le trappole che ci sono costate tempo (così non le ripaghi), e i prossimi passi. È self‑contained, ma le verità "canoniche" stanno in:
 
 - [`docs/HANDOFF.md`](HANDOFF.md) — briefing autorevole per agenti (build, sicurezza, verifica).

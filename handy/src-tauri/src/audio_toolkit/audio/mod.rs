@@ -17,11 +17,11 @@ pub use system_audio::SystemAudioRecorder;
 pub use utils::{read_wav_samples, save_wav_file, verify_wav_file};
 pub use visualizer::AudioVisualiser;
 
-/// Tap-free "is audio playing on the speakers?" sensor for seamless auto-capture. On macOS aarch64
-/// it reads the default output device's run state; elsewhere it is a stub that never triggers.
+/// Tap-free "is some OTHER app playing audio?" sensor for seamless auto-capture. On macOS aarch64
+/// it reads per-process CoreAudio output state (own PID excluded); elsewhere it never triggers.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use output_sensor::output_audio_active;
+pub use output_sensor::external_output_active;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-pub fn output_audio_active() -> bool {
+pub fn external_output_active() -> bool {
     false
 }

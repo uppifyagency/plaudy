@@ -1,8 +1,8 @@
 # Plaude Local — Agent Handoff (authoritative briefing)
 
-**For the next AI coding agent or developer. Read this first, top to bottom.** It is self‑contained: state, evidence, exact build/run, how to re‑verify everything, the traps that cost real time, the security posture, what's left, and the decisions only a human can make. Deep architecture lives in [CODEBASE.md](CODEBASE.md); line‑cited Fase 2 forensics in [HANDOFF-FASE2.md](HANDOFF-FASE2.md); the riffado teardown verdict in [DECISIONS.md](DECISIONS.md).
+**For the next AI coding agent or developer. Read this first, top to bottom.** It is self‑contained: state, evidence, exact build/run, how to re‑verify everything, the traps that cost real time, the security posture, what's left, and the decisions only a human can make. Deep architecture lives in [CODEBASE.md](CODEBASE.md); line‑cited forensics in [HANDOFF-FASE2.md](HANDOFF-FASE2.md) (diarization) and [HANDOFF-AUTOCAPTURE.md](HANDOFF-AUTOCAPTURE.md) (the 2026‑07‑05 auto‑capture trigger session); the riffado teardown verdict in [DECISIONS.md](DECISIONS.md).
 
-_Snapshot: 2026‑06‑23. Branch `main`. Working tree NOT committed (commit only when asked)._
+_Snapshot: 2026‑07‑05. Branch `main`. Working tree NOT committed (commit only when asked)._
 
 ---
 
@@ -10,9 +10,9 @@ _Snapshot: 2026‑06‑23. Branch `main`. Working tree NOT committed (commit onl
 
 **Mission:** Plaude Local = a **local‑first, offline, private** alternative to Plaud (AI voice recorder + "who said what") for macOS, built on the **Handy** fork (Tauri 2, Rust + React). Capture is **on‑device**; ASR + diarization run **locally** (ONNX); **nothing leaves the Mac**. Claude connects to your library through a **local MCP server**.
 
-**Posture today:** the product thesis is **built and proven live**. One click (menu‑bar "graffetta") records a meeting — your **mic** + the Mac's **system audio** as two streams — and it lands as **one speaker‑attributed transcript** that **Claude can summarize/search locally**. Green across the board: **92 Rust unit tests · 4 MCP tests · `tsc` · ESLint**. A 36 MB optimized **release binary builds**.
+**Posture today:** the product thesis is **built and proven live**. One click (menu‑bar "graffetta") records a meeting — your **mic** + the Mac's **system audio** as two streams — and it lands as **one speaker‑attributed transcript** that **Claude can summarize/search locally**. And since 2026‑07‑05 the click is optional: the **seamless auto‑capture trigger works** (per‑process CoreAudio sensor, own PID excluded — E2E‑validated live; still opt‑in, `auto_capture_enabled=false`, pending one real‑meeting validation). Green across the board: **102 Rust unit tests · 2 live‑acceptance tests · 4 MCP tests · `tsc` · ESLint**. A 36 MB optimized **release binary builds**.
 
-**What's NOT done:** a signed/notarized `.app`/`.dmg` (needs full Xcode), true acoustic echo cancellation (only the transcript‑level bleed dup is handled), the iPhone target (needs Xcode), and visual UI polish of the History "result" view. See §10–§11.
+**What's NOT done:** a signed/notarized `.app`/`.dmg` (needs full Xcode), true acoustic echo cancellation (only the transcript‑level bleed dup is handled), the iPhone target (needs Xcode), the real‑meeting validation that would let auto‑capture default to on. See §10–§11.
 
 ---
 
@@ -23,7 +23,7 @@ _Snapshot: 2026‑06‑23. Branch `main`. Working tree NOT committed (commit onl
    ```bash
    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"
    export CMAKE_POLICY_VERSION_MINIMUM=3.5 HANDY_FORCE_AI_STUB=1
-   cd handy/src-tauri && cargo test --lib      # expect: 92 passed
+   cd handy/src-tauri && cargo test --lib      # expect: 102 passed (+2 ignored)
    cd ../mcp && bun test                         # expect: 4 pass
    ```
 3. **Run the app:** `cd handy && bun tauri dev` (leave it running; it regenerates `src/bindings.ts`). Keep an ASR model selected with `unload_timeout ≠ Immediately`.
@@ -49,7 +49,7 @@ export HANDY_FORCE_AI_STUB=1              # CLT lacks the @Generable macro plugi
 | Task | Command |
 | --- | --- |
 | Full app (dev) | `cd handy && bun tauri dev` (regenerates `src/bindings.ts` at startup) |
-| Backend tests | `cd handy/src-tauri && cargo test --lib` → **92 passed** |
+| Backend tests | `cd handy/src-tauri && cargo test --lib` → **102 passed** (+2 ignored live‑acceptance) |
 | MCP tests | `cd handy/mcp && bun test` → **4 pass** |
 | Type‑check (fast) | `cd handy/src-tauri && cargo check --lib` |
 | Frontend type‑check | `cd handy && bunx tsc --noEmit` |
@@ -77,7 +77,10 @@ Drop `HANDY_FORCE_AI_STUB` once **full Xcode** is installed (also needed for the
 | **Local MCP server** (Claude bridge) | `handy/mcp/`, `.mcp.json` | **verified live against the real `history.db`** (returned rows 11/12 + diarized meetings); 4 tests + JSON‑RPC smoke | High |
 | Bundled diarization models | `resources/models/diarization/` | auto‑install on first run → offline | High |
 | Release binary | `tauri build --no-bundle` | built clean, 36 MB | High |
-| **History session‑card result view** | `HistorySettings.tsx` | source icon (meeting/mic/system/dictation) · topic title · date·duration·source meta · speaker chips · collapsible timeline + player + actions | High (live‑validated this session) |
+| **History session‑card result view** | `HistorySettings.tsx` | source icon (meeting/mic/system/dictation) · topic title · date·duration·source meta · speaker chips · collapsible timeline + player + actions | High (live‑validated 2026‑06‑23) |
+| Menu‑bar **"ear"** listening signal | `tray.rs` `TrayIconState::Listening` + `resources/tray_listening.png` | icon flips to an ear whenever a session records (any route); dictation keeps the dot | High |
+| **Auto‑capture engine** (brain + shell) | `managers/auto_capture.rs` | pure `AutoCaptureDecider` (6 unit tests) + supervisor with probation/discard/cooldown/manual‑respect | High |
+| **Per‑process auto‑capture trigger** | `audio_toolkit/audio/output_sensor.rs` | `ProcessObjectList` + `IsRunningOutput`, own PID excluded; 4 unit + 2 live‑acceptance tests; **full E2E live 2026‑07‑05** (afplay → auto‑start ≈1.4 s → probation ok → auto‑finalize, `history.db` row 79 `done`) | High (synthetic audio; real‑meeting run pending) |
 
 > **The one bug the tests did NOT catch (now fixed):** a **start‑path deadlock** — `start_sources` emitted `SessionStateChanged` while holding the `active` mutex; the listener runs *inline* and re‑enters the manager (`change_tray_icon` → `update_tray_menu` → `is_active()`), re‑locking the non‑reentrant mutex. Fixed by `drop(guard)` before `emit`. See §6.1. Found by adversarial review; the unit tests never traverse the emit→listener path. **Lesson: drop the lock before emitting any event whose listener may re‑enter the manager.**
 
@@ -94,6 +97,7 @@ Drop `HANDY_FORCE_AI_STUB` once **full Xcode** is installed (also needed for the
 | Event | `session-state-changed` | `{ active, source }` → drives UI + tray icon (single source of truth) |
 | Event | `history-update-payload` | `added`/`updated`/`deleted`/`toggled` (binding key `historyUpdatePayload`) |
 | CLI flag | `--toggle-session` / `--toggle-system-session` / `--toggle-meeting` | single mic / single system / dual. Plus upstream `--toggle-transcription` (dictation), `--cancel`, etc. |
+| Setting | `auto_capture_enabled` | opt‑in gate for the seamless auto‑capture supervisor (default `false`; flip only after a real‑meeting validation) |
 
 All session routes converge on `SessionManager`. CLI flags forward to a **running** primary via the single‑instance plugin (`lib.rs`); with no primary they boot a new instance and silently ignore the flag (see §6.4). Commands/events are typed through `tauri-specta` into `src/bindings.ts` (regenerated on dev startup).
 
@@ -135,6 +139,10 @@ CREATE INDEX idx_segments_history ON transcription_segments(history_id);
 
 **6.6 — Bindings export is dev‑only & non‑fatal** (logs and continues on a read‑only CWD). **Migrations are append‑only.** **i18n is build‑blocking** (ESLint errors on literal JSX strings; add keys to `src/i18n/locales/en/translation.json`, others fall back to English; the tray's `TrayStrings` are auto‑generated by `build.rs` from the English `tray` block).
 
+**6.7 — Never gate auto‑capture on the device‑level "running" flag.** `kAudioDevicePropertyDeviceIsRunningSomewhere` reads perpetually true from inside this app once our tap has ever been opened (proved live: 17/17 idle auto‑starts were empty). The fix is the **per‑process sensor** (`output_sensor.rs`: `kAudioHardwarePropertyProcessObjectList` + `kAudioProcessPropertyIsRunningOutput`, own PID excluded) — and **probation stays** as the second net. START and STOP use different signals on purpose: START = per‑process sensor; STOP = captured‑audio silence (a meeting app keeps its output stream open while nobody talks, so "app is outputting" can't end a call).
+
+**6.8 — A settings field takes two edits:** the `#[serde(default)]` attribute *and* the explicit field in `get_default_settings()` (`settings.rs` ~line 787) — forgetting the second ships wrong defaults on fresh installs.
+
 ---
 
 ## 7. Security posture (the local‑first contract)
@@ -149,7 +157,7 @@ CREATE INDEX idx_segments_history ON transcription_segments(history_id);
 
 ## 8. File inventory (our delta on upstream Handy)
 
-**New:** `managers/session.rs` (long‑form + dual capture), `audio_toolkit/audio/system_audio.rs` (CoreAudio tap), `managers/diarization.rs` (`align`/`label_segments`/`merge_segments`/`drop_bleed` + `DiarizationManager`), `commands/session.rs`, `resources/models/diarization/*.onnx`, **`handy/mcp/{db,server}.ts,db.test.ts,package.json,README.md}`**, **`.mcp.json`** (repo root), `src/components/settings/sessions/SessionsSettings.tsx`.
+**New:** `managers/session.rs` (long‑form + dual capture), `audio_toolkit/audio/system_audio.rs` (CoreAudio tap), `managers/diarization.rs` (`align`/`label_segments`/`merge_segments`/`drop_bleed` + `DiarizationManager`), `managers/auto_capture.rs` (seamless auto‑capture brain + supervisor), `audio_toolkit/audio/output_sensor.rs` (per‑process trigger sensor), `commands/session.rs`, `resources/models/diarization/*.onnx`, `resources/tray_listening.png` (the ear), **`handy/mcp/{db,server}.ts,db.test.ts,package.json,README.md}`**, **`.mcp.json`** (repo root), `src/components/settings/sessions/SessionsSettings.tsx`.
 
 **Modified (key):** `managers/history.rs` (migrations #5/#6, status, dual‑namespace `write_segments`, `save_pending_entry`, `fail_stale_transcribing`), `managers/transcription.rs` (`transcribe_with_segments`), `managers/model.rs` (diarization download + bundle), `tray.rs` (graffetta), `lib.rs` (wiring, listener, `--toggle-meeting`, `start_meeting`, startup self‑heal), `cli.rs`, `audio_toolkit/audio/recorder.rs` (`with_chunk_sink`), `commands/history.rs`, `components/settings/history/HistorySettings.tsx` (timeline + speaker chips + status states), `Sidebar.tsx`, `i18n/locales/{en,it}/translation.json`, `Cargo.toml`/`.cargo/config.toml`/`build.rs`/`Info.plist`, `src/bindings.ts` (regenerated). Full table in [CODEBASE.md §11](CODEBASE.md).
 
@@ -159,9 +167,22 @@ CREATE INDEX idx_segments_history ON transcription_segments(history_id);
 
 ```bash
 # Backend + MCP correctness
-cd handy/src-tauri && cargo check --lib && cargo test --lib   # 92 passed
+cd handy/src-tauri && cargo check --lib && cargo test --lib   # 102 passed (+2 ignored)
 cd ../mcp && bun test                                          # 4 pass
 cd ../ && bunx tsc --noEmit && bun run lint                    # clean
+
+# AUTO-CAPTURE sensor live acceptance (no app needed; machine should be quiet):
+#   cargo test --lib output_sensor -- --ignored --nocapture --test-threads=1
+#   → live_own_tap_open_does_not_trigger  (the 17/17-false-starts regression, must stay false)
+#   → live_external_afplay_triggers       (external process playing → true)
+
+# AUTO-CAPTURE full E2E (synthetic, deterministic — how it was validated 2026-07-05):
+#   1) back up settings_store.json; set settings.auto_capture_enabled=true
+#   2) ./target/debug/handy --start-hidden   (background)
+#   3) stay quiet ~5s (expect NO trigger) → loop afplay /System/Library/Sounds/Submarine.aiff ~8s
+#   4) log expects: "system audio detected → session started (probation)" → "real audio confirmed"
+#      → (after ~4s silence) "speakers quiet → session finalized"; new history row status 'done'
+#   5) kill app FIRST, then restore settings (the store flushes on exit and would overwrite)
 
 # LIVE dual meeting capture (deterministic, no headphones needed — uses macOS `say`):
 #   1) bun tauri dev running; an ASR model resident.
@@ -191,19 +212,21 @@ cd ../ && bunx tsc --noEmit && bun run lint                    # clean
 
 ## 11. What's PENDING / DEFERRED (prioritized)
 
-1. **Acoustic echo cancellation (AEC).** `drop_bleed` removes the transcript *duplicate*; the echo is still in the mixed WAV and the mic still hears the speakers. Real AEC (subtract the system reference from the mic in `recorder.rs`/`session.rs`) is the proper fix for clean speaker use. Headphones sidestep it today.
-2. **AI topic‑title & summary for History cards.** The session‑card result view **shipped** (`HistorySettings.tsx`, live‑validated): source icon, date·duration·source meta, speaker chips, and a collapsible speaker timeline + player + actions. The card title is currently the transcript's opening words — a **non‑AI placeholder**. The remaining piece — a clean AI‑generated title/summary instead of that placeholder — is **gated on the AI‑provider decision (§12)**.
+1. **Auto‑capture: real‑meeting validation → consider flipping the default.** The trigger is fixed and E2E‑validated with synthetic audio (2026‑07‑05, see [HANDOFF-AUTOCAPTURE.md](HANDOFF-AUTOCAPTURE.md)). Run one real Zoom/Meet call with `auto_capture_enabled=true` (expect auto‑start, "Me"+"Speaker N" transcript, auto‑finalize), then decide the default. Optional refinement: an **app allowlist** via `kAudioProcessPropertyBundleID` (one more property read in `output_sensor.rs`) so only meeting apps trigger.
+2. **Acoustic echo cancellation (AEC).** `drop_bleed` removes the transcript *duplicate*; the echo is still in the mixed WAV and the mic still hears the speakers. Real AEC (subtract the system reference from the mic in `recorder.rs`/`session.rs`) is the proper fix for clean speaker use. Headphones sidestep it today.
 3. **"Enable diarization" download button** in the Sessions view (command exists; bundling already covers fresh clones, so it's a fallback).
-4. **Signed/notarized `.app`/`.dmg`** — release *binary* builds; the bundle needs **full Xcode**.
-5. **iPhone target (needs full Xcode).** No iOS upstream. Recommended: **iPhone‑as‑capture + Mac‑as‑brain** over Apple's nearby transfer — a SwiftUI app records locally and, on proximity, pushes files (MultipeerConnectivity, or Network.framework peer‑to‑peer Bonjour) into the Mac's `recordings/` dir, where the existing `recover_interrupted`/finalize pipeline ingests them chronologically.
-6. **Clustering threshold tuning** — only if a rapid‑alternation recording over‑merges speakers (defaults are good for long‑turn audio). Lever: `OfflineSpeakerDiarizationConfig` in `diarization.rs`.
+4. **AI topic‑title & summary — via MCP (decision RESOLVED 2026‑07‑05, see §12).** No local LLM sidecar: the user's/client's agents call the local MCP (`get_session`) and produce title/summary on demand with their own subscription. Card titles keep the non‑AI placeholder (transcript opening words) until/unless an agent‑written title persistence path is wanted — that would need a deliberate, tiny write surface (MCP is read‑only by contract; see §7).
+5. **Signed/notarized `.app`/`.dmg`** — release *binary* builds; the bundle needs **full Xcode**.
+6. **iPhone target (needs full Xcode).** No iOS upstream. Recommended: **iPhone‑as‑capture + Mac‑as‑brain** over Apple's nearby transfer — a SwiftUI app records locally and, on proximity, pushes files (MultipeerConnectivity, or Network.framework peer‑to‑peer Bonjour) into the Mac's `recordings/` dir, where the existing `recover_interrupted`/finalize pipeline ingests them chronologically.
+7. **Clustering threshold tuning** — only if a rapid‑alternation recording over‑merges speakers (defaults are good for long‑turn audio). Lever: `OfflineSpeakerDiarizationConfig` in `diarization.rs`.
 
 ---
 
 ## 12. Open decisions (need a human call — do NOT guess)
 
-- **AI provider stance:** local‑only by default? Allow opt‑in Ollama/LM Studio "cloud boost"? Any non‑local path at all? (Drives a `ProviderPreset`/`TranscriptionStyle` abstraction + an `ai_enhancements` table — see DECISIONS.md.)
-- **Encryption key management** (only once a secret exists): macOS Keychain (recommended) vs passphrase‑derived (Argon2), or defer.
+- ~~**AI provider stance**~~ **RESOLVED (Vlad, 2026‑07‑05): the local MCP is the AI path.** Client/user agents interrogate the transcription and produce summary/title on the fly with the user's own subscription. Explicitly **no local LLM sidecar** (Meetily's `llama-helper` pattern was evaluated end‑to‑end and rejected). No provider abstraction, no `ai_enhancements` table, no keys — nothing to encrypt.
+- **When to flip `auto_capture_enabled` default to `true`:** after the real‑meeting validation (§11.1). Product call — includes the privacy stance (system‑audio trigger only; bare‑mic auto‑record stays separate opt‑in).
+- **Encryption key management** (only once a secret exists — none today, and none planned after the MCP decision): macOS Keychain (recommended) vs passphrase‑derived (Argon2), or defer.
 - **Bleed strategy:** ship AEC, or treat "use headphones / System mode" as the documented answer and keep `drop_bleed` as the safety net?
 - **Webhooks / local automation surface** (fire `session.ended` to n8n/Obsidian) — build, or YAGNI until asked?
 - **Commit cadence** — the tree is uncommitted by design; ask before committing.
@@ -220,4 +243,4 @@ cd ../ && bunx tsc --noEmit && bun run lint                    # clean
 
 ---
 
-*Created 2026‑06‑22, elevated to a full briefing 2026‑06‑23. Keep this current as the agent entry‑point. Deep technical reference: [CODEBASE.md](CODEBASE.md). riffado teardown verdict: [DECISIONS.md](DECISIONS.md).*
+*Created 2026‑06‑22, elevated to a full briefing 2026‑06‑23, refreshed 2026‑07‑05 (auto‑capture trigger unshelved + §12 AI decision resolved). Keep this current as the agent entry‑point. Deep technical reference: [CODEBASE.md](CODEBASE.md). Session forensics: [HANDOFF-FASE2.md](HANDOFF-FASE2.md), [HANDOFF-AUTOCAPTURE.md](HANDOFF-AUTOCAPTURE.md). riffado teardown verdict: [DECISIONS.md](DECISIONS.md).*

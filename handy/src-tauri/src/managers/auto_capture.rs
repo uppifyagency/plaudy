@@ -14,12 +14,11 @@
 //! *system-audio* trigger only; auto-capturing the bare microphone is a separate, opt-in path.
 //!
 //! STATUS — EXPERIMENTAL, OFF by default (`auto_capture_enabled` = false). The system-audio
-//! *trigger* is shelved: macOS reports the default output device as perpetually "running" from
-//! inside this process once a tap has ever been opened (see `audio_toolkit::audio::output_sensor`),
-//! so the tap-free presence sensor false-triggers in-app (validated live: 17/17 idle starts were
-//! empty false-starts). The brain, probation/discard, and silence-stop below are sound and
-//! unit-tested; the next step is to drive them from a reliable signal (mic VAD — "start when you
-//! speak") rather than the output-device sensor. Until then the supervisor idles (setting off).
+//! trigger is now the *per-process* sensor (`audio_toolkit::audio::output_sensor`): it attributes
+//! output to PIDs and excludes our own, which removes the root cause of the old false-triggers
+//! (the device-level "running" flag stuck true once our tap had ever been opened; 17/17 idle
+//! starts were empty). Probation/discard below stays as defense in depth. Flip the setting on
+//! after a live end-to-end validation with a real meeting.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -243,13 +242,14 @@ pub fn run_supervisor(app: AppHandle, session: Arc<SessionManager>) {
             cooldown_until = None;
         }
 
-        // START uses the tap-free device sensor (reliable while we hold no tap). Once a session is
-        // running, that sensor reads "running" because of our OWN tap — useless for stop — so we
-        // switch to the captured system-audio level: silent for STOP_AFTER → finalize.
+        // START uses the tap-free per-process sensor (own PID excluded, so our tap can't wake us).
+        // For STOP we still prefer the captured system-audio level: a meeting app holds its output
+        // stream open even while nobody talks, so "is the app outputting" can't detect the end of
+        // a call — captured silence for STOP_AFTER can.
         let present = if session.is_active() {
             session.system_audio_idle() < Duration::from_millis(800)
         } else {
-            crate::audio_toolkit::audio::output_audio_active()
+            crate::audio_toolkit::audio::external_output_active()
         };
         if last_present != Some(present) {
             info!("Auto-capture sensor: audio_present = {present} (capturing={auto_started})");
