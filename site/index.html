@@ -61,7 +61,7 @@
 
 <style>
 :root{
-  --ink:#0a0a0a; --paper:#f6f5f2; --red:#e8340c; --grey:#7a7a76;
+  --ink:#0a0a0a; --paper:#f6f5f2; --red:#e8340c; --red-ink:#d42e0a; --grey:#62625e;
   --step:clamp(2.6rem,8.5vw,7.5rem);
 }
 *{margin:0;padding:0;box-sizing:border-box}
@@ -80,6 +80,7 @@ a:focus-visible,button:focus-visible{outline:3px solid var(--red);outline-offset
   font-weight:500;color:var(--grey);
 }
 .rule{border:0;border-top:1px solid var(--ink);opacity:.2}
+.hero .label,.dark .label{color:#8f8e8a}
 
 /* ---------- nav ---------- */
 nav{display:flex;justify-content:space-between;align-items:center;padding:1.5rem 0}
@@ -114,7 +115,7 @@ h1 em{font-style:normal;color:var(--red)}
   transition:transform .12s,background .15s,color .15s;
 }
 .btn:hover{transform:translateY(-2px)}
-.btn-red{background:var(--red);color:#fff}
+.btn-red{background:var(--red-ink);color:#fff}
 .btn-ghost{border:1.5px solid var(--paper);color:var(--paper)}
 .btn-ghost:hover{background:var(--paper);color:var(--ink)}
 .hero-meta{margin-top:3.5rem;display:flex;gap:2.5rem;flex-wrap:wrap}
@@ -141,7 +142,7 @@ h2{
 /* numbered principles */
 .principles{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:0;margin-top:4rem;border-top:1px solid var(--ink)}
 .principle{border-bottom:1px solid var(--ink);padding:2.2rem 1.6rem 2.6rem 0}
-.principle .num{font-size:.8rem;letter-spacing:.2em;color:var(--red);font-weight:700}
+.principle .num{font-size:.8rem;letter-spacing:.2em;color:var(--red-ink);font-weight:700}
 .principle h3{margin-top:1rem;font-size:1.35rem;letter-spacing:-.01em;line-height:1.2}
 .principle p{margin-top:.8rem;font-size:.95rem;color:#3d3d3a;max-width:36ch}
 
@@ -151,7 +152,7 @@ h2{
   border:1.5px solid var(--ink);border-radius:999px;padding:.6em 1.2em;
   font-size:.85rem;font-weight:600;letter-spacing:.03em;white-space:nowrap;
 }
-.pipeline .arrow{border:0;color:var(--red);font-weight:700;padding:0 .2em}
+.pipeline .arrow{border:0;color:var(--red-ink);font-weight:700;padding:0 .2em}
 .pipeline .you{background:var(--ink);color:var(--paper)}
 
 /* ---------- comparison ---------- */
@@ -183,7 +184,7 @@ tbody th{font-weight:600;color:var(--paper)}
   align-items:baseline;padding:1.6rem 0;font-size:clamp(1.1rem,2vw,1.5rem);font-weight:600;letter-spacing:-.01em;
 }
 .faq summary::-webkit-details-marker{display:none}
-.faq summary::after{content:"+";color:var(--red);font-weight:700;font-size:1.4em;line-height:1}
+.faq summary::after{content:"+";color:var(--red-ink);font-weight:700;font-size:1.4em;line-height:1}
 .faq details[open] summary::after{content:"–"}
 .faq .a{padding:0 0 1.8rem;max-width:62ch;color:#3d3d3a}
 .faq .a p+p{margin-top:.7rem}
