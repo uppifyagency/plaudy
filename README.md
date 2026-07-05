@@ -33,7 +33,7 @@ Plaudy refuses the trade-off:
 - 🔒 **Actually private.** Capture, transcription (Parakeet/Whisper), and speaker diarization all run **on your Mac**. Nothing is uploaded — ever. No account, no telemetry, no sign-in.
 - 🎙️ **Both sides, natively.** Records your mic **and** the Mac's system audio through the native **CoreAudio Process Tap** (macOS 14.4+). No BlackHole, no virtual devices, no kernel extensions to install.
 - 🗣️ **Who said what.** Real on-device diarization (sherpa-onnx) turns a recording into a **per-speaker timeline** — `Me · 0:04 · "…"` / `Speaker 1 · 0:09 · "…"` — not an anonymous wall of text.
-- 🤖 **Bring your own AI.** Instead of bundling a weak local model, Plaudy exposes your library to **your** AI (Claude / Claude Code) over a local **[MCP](https://modelcontextprotocol.io) server**. Summaries and search use *your* subscription; your recordings never leave the disk to get there.
+- 🤖 **Bring your own AI.** Instead of bundling a weak local model, Plaudy exposes your library to **your** AI (Claude / Claude Code) over a local **[MCP](https://modelcontextprotocol.io) server**. Summaries run through the AI *you* already use — the transcript text goes to your Claude (there's no Plaudy cloud in between), while your audio and database stay on the Mac. *(Prefer fully offline? Point the same MCP at a local model — the bridge is model-agnostic.)*
 - 🪄 **Feels like a Mac app.** A menu-bar "graffetta" — the icon becomes an **ear** 👂 the moment it's listening (an honest, always-visible signal). One click to record, or opt-in **auto-capture** that starts on its own when audio plays.
 - 🧩 **One native app.** No server process, no Docker, no Python backend. Open it and record.
 
@@ -48,7 +48,7 @@ Plaudy refuses the trade-off:
 | 🧠 **Local ASR** | Parakeet / Whisper (whisper-rs, Metal-accelerated). |
 | 🫧 **Echo de-dup (`drop_bleed`)** | When audio plays over speakers and the mic re-hears it, one person isn't split into two. |
 | 👂 **Menu-bar ear** | The tray icon turns into an ear while recording — you always know when it listens. |
-| 🪄 **Opt-in auto-capture** | Senses when another app is emitting audio (per-process CoreAudio attribution, *your own tap excluded*) and starts a session on its own. |
+| 🪄 **Opt-in auto-capture** *(experimental)* | Senses when another app is emitting audio (per-process CoreAudio attribution, *your own tap excluded*) and starts a session on its own. |
 | 🗂️ **History as result, not dump** | Each recording is a **session card**: source icon, topic title, duration, speaker chips, and a collapsible speaker timeline + player. |
 | 🔌 **Local MCP bridge** | A dependency-free, read-only MCP server lets Claude `list` / `get` / `search` your recordings — locally. |
 | 📦 **Offline-ready** | Diarization models are bundled; a fresh clone works without downloading anything. |
@@ -109,8 +109,8 @@ bun tauri build                           # … or build Plaudy.app + Plaudy_*.d
 | Runs **fully on-device** | ✅ | ❌ uploads to their servers | ⚠️ local, but runs a backend server |
 | **Account** required | ❌ none | ✅ | ❌ |
 | Audio **leaves your machine** | ❌ never | ✅ always | ❌ (if self-hosted) |
-| **Who said what** (diarization) | ✅ on-device, per-segment timeline | ✅ (in their cloud) | ⚠️ basic / varies |
-| **System-audio** capture | ✅ native Process Tap, no extra driver | n/a | ⚠️ setup / virtual device |
+| **Who said what** (diarization) | ✅ on-device, per-segment timeline | ✅ (in their cloud) | ⚠️ varies |
+| **System-audio** capture | ✅ native Process Tap, no extra driver | n/a | ⚠️ varies by setup |
 | **AI** summaries | 🤖 *your* AI via local MCP | their cloud LLM | bundled local/cloud LLM |
 | **Architecture** | single native macOS app | SaaS | app **+** server |
 | **Price** | free · open-source | subscription | free · open-source |
@@ -123,10 +123,11 @@ bun tauri build                           # … or build Plaudy.app + Plaudy_*.d
 
 ## Privacy — the whole point
 
-- **No network egress for your data.** ASR + diarization run on-device (ONNX). The MCP server speaks **stdio only** — no listener, no socket, no fetch.
+- **Capture, transcription & diarization: zero network.** They run on-device (ONNX). The MCP server speaks **stdio only** — no listener, no socket, no fetch. Plaudy itself never phones home: no telemetry, no Plaudy account, no Plaudy server.
+- **Your audio never leaves the Mac.** The recordings and the SQLite DB live in `~/Library/Application Support/` and stay there.
+- **The AI step is yours, and opt-in.** When *you* ask your Claude to summarize over MCP, the **transcript text** goes to the AI you already use — under your own account, exactly like any other Claude use. There's no Plaudy middleman, and you can point the bridge at a local model to keep even that offline.
 - **The MCP bridge is read-only.** It opens `history.db` `readonly`; every query is parameterized. It physically cannot alter or exfiltrate a recording.
 - **Honest signals.** The menu-bar ear shows when Plaudy is listening; auto-capture is **opt-in** and never records your bare microphone on its own — the mic only joins a session that system audio has already triggered.
-- **No secrets, no telemetry, no accounts.** Recordings and the SQLite DB live in `~/Library/Application Support/` on your machine.
 
 ---
 
