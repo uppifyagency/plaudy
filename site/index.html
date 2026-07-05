@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plaudy — Local, Open-Source Plaud &amp; Otter Alternative</title>
+<meta name="description" content="Plaudy records meetings 100% on your Mac — mic + system audio, on-device speaker diarization, summaries by your own Claude. No cloud, no account. Free, MIT.">
+<link rel="canonical" href="https://plaudy.vercel.app/">
+<meta name="theme-color" content="#0a0a0a">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E👂%3C/text%3E%3C/svg%3E">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Plaudy">
+<meta property="og:title" content="Plaudy — your meetings are none of the cloud's business">
+<meta property="og:description" content="Open-source meeting recorder for macOS. Who said what, transcribed and summarized 100% on-device. No cloud, no account, free.">
+<meta property="og:url" content="https://plaudy.vercel.app/">
+<meta property="og:image" content="https://plaudy.vercel.app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Plaudy — your meetings are none of the cloud's business">
+<meta name="twitter:description" content="Open-source meeting recorder for macOS. Who said what, 100% on-device. No cloud, no account, free.">
+<meta name="twitter:image" content="https://plaudy.vercel.app/og.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Plaudy",
+  "operatingSystem": "macOS 14.4+",
+  "applicationCategory": "BusinessApplication",
+  "description": "Open-source, local-first meeting recorder for macOS. Records microphone and system audio, transcribes and separates speakers 100% on-device, and hands transcripts to your own AI over a local MCP bridge. No cloud, no account.",
+  "url": "https://plaudy.vercel.app/",
+  "downloadUrl": "https://github.com/uppifyagency/plaudy",
+  "license": "https://opensource.org/license/mit",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "sameAs": ["https://github.com/uppifyagency/plaudy"],
+  "publisher": { "@type": "Organization", "name": "Uppify", "url": "https://github.com/uppifyagency" }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "What is Plaudy?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Plaudy is an open-source macOS meeting recorder that runs 100% on-device. It captures your microphone and the Mac's system audio, transcribes them, separates the speakers, and lets your own AI summarize the result over a local MCP bridge." } },
+    { "@type": "Question", "name": "Is Plaudy really private?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes — capture, transcription and speaker diarization never touch the network. Recordings and the database live in ~/Library/Application Support and stay there. There is no Plaudy account, no telemetry and no Plaudy server. The only network step is the one you opt into: asking your own AI to summarize a transcript." } },
+    { "@type": "Question", "name": "How is Plaudy different from Plaud, Otter or Fireflies?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Plaud, Otter and Fireflies upload your audio to their cloud; Plaudy never does. Everything runs on your Mac, there is no account or subscription, and AI summaries go through the AI you already use instead of a vendor's LLM." } },
+    { "@type": "Question", "name": "Does Plaudy know who said what?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes — on-device speaker diarization (sherpa-onnx with pyannote segmentation and TitaNet) builds a per-speaker timeline, so a recording reads as Me / Speaker 1 / Speaker 2 with timestamps, not an anonymous wall of text." } },
+    { "@type": "Question", "name": "Does Plaudy need a virtual audio driver like BlackHole?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No — Plaudy captures system audio natively through the CoreAudio Process Tap on macOS 14.4+. No virtual devices, no kernel extensions, no purple screen-recording banner." } },
+    { "@type": "Question", "name": "How much does Plaudy cost?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Nothing. Plaudy is free and MIT-licensed. Clone it from GitHub and build it with the documented toolchain — no Homebrew and no full Xcode required." } }
+  ]
+}
+</script>
+
+<style>
+:root{
+  --ink:#0a0a0a; --paper:#f6f5f2; --red:#e8340c; --grey:#7a7a76;
+  --step:clamp(2.6rem,8.5vw,7.5rem);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+  background:var(--paper); color:var(--ink);
+  -webkit-font-smoothing:antialiased; line-height:1.5;
+}
+::selection{background:var(--red);color:#fff}
+a{color:inherit}
+a:focus-visible,button:focus-visible{outline:3px solid var(--red);outline-offset:3px}
+.wrap{max-width:1200px;margin:0 auto;padding:0 clamp(1.25rem,4vw,3rem)}
+.label{
+  font-size:.75rem;letter-spacing:.22em;text-transform:uppercase;
+  font-weight:500;color:var(--grey);
+}
+.rule{border:0;border-top:1px solid var(--ink);opacity:.2}
+
+/* ---------- nav ---------- */
+nav{display:flex;justify-content:space-between;align-items:center;padding:1.5rem 0}
+nav .brand{font-weight:700;letter-spacing:-.02em;font-size:1.15rem;text-decoration:none}
+nav .brand span{color:var(--red)}
+nav a.gh{
+  text-decoration:none;font-size:.8rem;letter-spacing:.14em;text-transform:uppercase;
+  border:1.5px solid var(--ink);padding:.55em 1.1em;border-radius:999px;font-weight:600;
+  transition:background .15s,color .15s;
+}
+nav a.gh:hover{background:var(--ink);color:var(--paper)}
+
+/* ---------- hero ---------- */
+header.hero{background:var(--ink);color:var(--paper)}
+header.hero nav .brand,header.hero nav a.gh{color:var(--paper)}
+header.hero nav a.gh{border-color:var(--paper)}
+header.hero nav a.gh:hover{background:var(--paper);color:var(--ink)}
+.hero-inner{padding:clamp(4rem,10vw,9rem) 0 clamp(4rem,8vw,7rem)}
+h1{
+  font-size:var(--step); line-height:.98; letter-spacing:-.035em; font-weight:700;
+  max-width:14ch;
+}
+h1 em{font-style:normal;color:var(--red)}
+.hero-sub{
+  margin-top:2.5rem;font-size:clamp(1.05rem,1.6vw,1.35rem);max-width:46ch;color:#c9c8c4;
+}
+.hero-sub strong{color:var(--paper);font-weight:600}
+.cta-row{margin-top:3rem;display:flex;gap:1rem;flex-wrap:wrap}
+.btn{
+  display:inline-block;text-decoration:none;font-weight:600;font-size:.95rem;
+  padding:1em 1.9em;border-radius:999px;letter-spacing:.02em;
+  transition:transform .12s,background .15s,color .15s;
+}
+.btn:hover{transform:translateY(-2px)}
+.btn-red{background:var(--red);color:#fff}
+.btn-ghost{border:1.5px solid var(--paper);color:var(--paper)}
+.btn-ghost:hover{background:var(--paper);color:var(--ink)}
+.hero-meta{margin-top:3.5rem;display:flex;gap:2.5rem;flex-wrap:wrap}
+.hero-meta div{font-size:.8rem;letter-spacing:.18em;text-transform:uppercase;color:#8f8e8a}
+
+/* ---------- statement strip ---------- */
+.strip{background:var(--red);color:#fff;padding:clamp(2.5rem,5vw,4rem) 0}
+.strip p{
+  font-size:clamp(1.6rem,3.6vw,2.9rem);font-weight:700;letter-spacing:-.02em;
+  line-height:1.15;max-width:26ch;
+}
+
+/* ---------- sections ---------- */
+section{padding:clamp(4rem,8vw,7.5rem) 0}
+h2{
+  font-size:clamp(2rem,5vw,4rem);letter-spacing:-.03em;line-height:1.04;
+  font-weight:700;max-width:20ch;
+}
+.answer{
+  margin-top:1.4rem;font-size:clamp(1.05rem,1.5vw,1.3rem);max-width:58ch;font-weight:500;
+}
+.detail{margin-top:1rem;font-size:1rem;color:#3d3d3a;max-width:62ch}
+
+/* numbered principles */
+.principles{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:0;margin-top:4rem;border-top:1px solid var(--ink)}
+.principle{border-bottom:1px solid var(--ink);padding:2.2rem 1.6rem 2.6rem 0}
+.principle .num{font-size:.8rem;letter-spacing:.2em;color:var(--red);font-weight:700}
+.principle h3{margin-top:1rem;font-size:1.35rem;letter-spacing:-.01em;line-height:1.2}
+.principle p{margin-top:.8rem;font-size:.95rem;color:#3d3d3a;max-width:36ch}
+
+/* pipeline */
+.pipeline{margin-top:3.5rem;display:flex;flex-wrap:wrap;gap:.6rem;align-items:center}
+.pipeline span{
+  border:1.5px solid var(--ink);border-radius:999px;padding:.6em 1.2em;
+  font-size:.85rem;font-weight:600;letter-spacing:.03em;white-space:nowrap;
+}
+.pipeline .arrow{border:0;color:var(--red);font-weight:700;padding:0 .2em}
+.pipeline .you{background:var(--ink);color:var(--paper)}
+
+/* ---------- comparison ---------- */
+.dark{background:var(--ink);color:var(--paper)}
+.dark h2{color:var(--paper)}
+.dark .answer{color:#c9c8c4}
+.tbl-scroll{margin-top:3.5rem;overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:640px}
+caption{text-align:left;font-size:.75rem;letter-spacing:.2em;text-transform:uppercase;color:#8f8e8a;padding-bottom:1rem}
+th,td{padding:1.1rem 1rem;text-align:left;border-bottom:1px solid #2e2e2c;font-size:.95rem;vertical-align:top}
+thead th{font-size:.75rem;letter-spacing:.18em;text-transform:uppercase;color:#8f8e8a;font-weight:600}
+td.yes{color:#7be3a2;font-weight:600}
+td.no{color:#ff8d73;font-weight:600}
+tbody th{font-weight:600;color:var(--paper)}
+.tbl-note{margin-top:1.2rem;font-size:.8rem;color:#8f8e8a;max-width:70ch}
+.tbl-note a{color:#c9c8c4}
+
+/* proof */
+.proof-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:2.5rem;margin-top:3.5rem}
+.proof-grid .stat{border-top:3px solid var(--red);padding-top:1.2rem}
+.proof-grid .stat b{display:block;font-size:2.4rem;letter-spacing:-.03em;line-height:1}
+.proof-grid .stat span{display:block;margin-top:.6rem;font-size:.9rem;color:#3d3d3a}
+
+/* FAQ */
+.faq{border-top:1px solid var(--ink);margin-top:3.5rem}
+.faq details{border-bottom:1px solid var(--ink)}
+.faq summary{
+  cursor:pointer;list-style:none;display:flex;justify-content:space-between;gap:2rem;
+  align-items:baseline;padding:1.6rem 0;font-size:clamp(1.1rem,2vw,1.5rem);font-weight:600;letter-spacing:-.01em;
+}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"+";color:var(--red);font-weight:700;font-size:1.4em;line-height:1}
+.faq details[open] summary::after{content:"–"}
+.faq .a{padding:0 0 1.8rem;max-width:62ch;color:#3d3d3a}
+.faq .a p+p{margin-top:.7rem}
+
+/* footer */
+footer{background:var(--ink);color:var(--paper);padding:clamp(4.5rem,9vw,8rem) 0 3rem}
+footer .end{
+  font-size:clamp(2.4rem,7vw,6rem);font-weight:700;letter-spacing:-.035em;line-height:1;max-width:16ch;
+}
+footer .end em{font-style:normal;color:var(--red)}
+footer .cta-row{margin-top:3rem}
+footer .cred{margin-top:5rem;display:flex;justify-content:space-between;gap:2rem;flex-wrap:wrap;font-size:.85rem;color:#8f8e8a}
+footer .cred a{color:#c9c8c4}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}.btn:hover{transform:none}}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <nav aria-label="Main">
+      <a class="brand" href="/">Plaudy<span>.</span></a>
+      <a class="gh" href="https://github.com/uppifyagency/plaudy">GitHub ↗</a>
+    </nav>
+    <div class="hero-inner">
+      <p class="label">Open source · macOS · MIT · 100% on-device</p>
+      <h1 style="margin-top:1.5rem">Your meetings are none of the cloud's <em>business.</em></h1>
+      <p class="hero-sub">
+        Plaudy records the room, transcribes it, and separates the speakers —
+        <strong>entirely on your Mac</strong>. Then <strong>your own AI</strong> summarizes it.
+        No cloud. No account. No audio ever leaves the machine.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-red" href="https://github.com/uppifyagency/plaudy">Get Plaudy on GitHub</a>
+        <a class="btn btn-ghost" href="#compare">Compare it to Plaud &amp; Otter</a>
+      </div>
+      <div class="hero-meta">
+        <div>Mic + system audio</div>
+        <div>Who said what</div>
+        <div>Your Claude, via MCP</div>
+        <div>Free forever</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="strip" role="presentation">
+  <div class="wrap"><p>Privacy isn't a feature we added. It's the product.</p></div>
+</div>
+
+<main>
+
+<section id="what" aria-labelledby="what-h">
+  <div class="wrap">
+    <p class="label">01 — The premise</p>
+    <h2 id="what-h" style="margin-top:1.2rem">What is Plaudy?</h2>
+    <p class="answer">Plaudy is an open-source macOS meeting recorder that runs 100% on-device.</p>
+    <p class="detail">
+      One click — or fully hands-free — captures both sides of a call: your microphone
+      <strong>and</strong> the Mac's system audio. It lands as a single, speaker-attributed
+      transcript you can play back, search, and summarize with the AI you already pay for.
+      Cloud recorders make you choose between convenience and privacy. We think that
+      trade-off is lazy design — so we refused it.
+    </p>
+
+    <div class="principles">
+      <div class="principle">
+        <p class="num">01</p>
+        <h3>Who said what — not a wall of text</h3>
+        <p>On-device speaker diarization builds a per-speaker timeline: <em>Me · 0:04</em>, <em>Speaker 1 · 0:09</em>. Offline, from the first recording.</p>
+      </div>
+      <div class="principle">
+        <p class="num">02</p>
+        <h3>Both sides, natively</h3>
+        <p>System audio via the native CoreAudio Process Tap (macOS 14.4+). No BlackHole, no virtual drivers, no kernel extensions.</p>
+      </div>
+      <div class="principle">
+        <p class="num">03</p>
+        <h3>Your AI, not theirs</h3>
+        <p>A local, read-only MCP bridge hands transcripts to <strong>your</strong> Claude. Summaries on your account — or point it at a local model and stay fully offline.</p>
+      </div>
+      <div class="principle">
+        <p class="num">04</p>
+        <h3>Honest by design</h3>
+        <p>The menu-bar icon becomes an ear 👂 whenever Plaudy listens. Auto-capture is opt-in and never records your bare mic on its own.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how" aria-labelledby="how-h" style="padding-top:0">
+  <div class="wrap">
+    <hr class="rule">
+    <p class="label" style="margin-top:4rem">02 — The machine</p>
+    <h2 id="how-h" style="margin-top:1.2rem">How does it work?</h2>
+    <p class="answer">Everything below happens on your Mac — the network is never part of the pipeline.</p>
+    <p class="detail">
+      Mic and system audio feed the same faithful capture, get mixed into one playable
+      recording, then two on-device models run side by side: diarization (sherpa-onnx)
+      figures out <em>who</em>, ASR (Parakeet / Whisper, Metal-accelerated) figures out
+      <em>what</em>. A merge step aligns them into a speaker timeline. The last arrow —
+      the AI summary — is the only one you opt into, and it goes to <em>your</em> AI.
+    </p>
+    <div class="pipeline" aria-label="Processing pipeline">
+      <span>🎙️ Mic</span><span>🔊 System audio</span><span class="arrow">→</span>
+      <span>Mix</span><span class="arrow">→</span>
+      <span>Diarize + Transcribe</span><span class="arrow">→</span>
+      <span>Who said what</span><span class="arrow">→</span>
+      <span class="you">🤖 Your AI, via local MCP</span>
+    </div>
+  </div>
+</section>
+
+<section id="compare" class="dark" aria-labelledby="compare-h">
+  <div class="wrap">
+    <p class="label">03 — The alternative</p>
+    <h2 id="compare-h" style="margin-top:1.2rem">How is Plaudy different from Plaud, Otter&nbsp;&amp;&nbsp;Fireflies?</h2>
+    <p class="answer">They upload your conversations to their servers. Plaudy never does.</p>
+    <div class="tbl-scroll">
+      <table>
+        <caption>Plaudy vs cloud recorders — July 2026, from public docs</caption>
+        <thead>
+          <tr><th scope="col">Question to ask</th><th scope="col">👂 Plaudy</th><th scope="col">Plaud · Otter · Fireflies</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">Where does my audio go?</th><td class="yes">Stays on your Mac — always</td><td class="no">Uploaded to their cloud</td></tr>
+          <tr><th scope="row">Do I need an account?</th><td class="yes">No account, no sign-in</td><td class="no">Yes</td></tr>
+          <tr><th scope="row">Who said what?</th><td class="yes">On-device diarization, per-segment timeline</td><td>Yes — but computed in their cloud</td></tr>
+          <tr><th scope="row">System-audio capture?</th><td class="yes">Native CoreAudio tap, no virtual driver</td><td class="no">Hardware gadget or bot-joins-your-call</td></tr>
+          <tr><th scope="row">Whose AI summarizes?</th><td class="yes">Yours — your Claude, your account, or a local model</td><td class="no">Their LLM, their servers</td></tr>
+          <tr><th scope="row">What does it cost?</th><td class="yes">Free — open source, MIT</td><td class="no">Subscription</td></tr>
+          <tr><th scope="row">Can I audit the code?</th><td class="yes">Every line, on GitHub</td><td class="no">Closed</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="tbl-note">
+      Honesty over flattery: if you need live transcription on Windows or Linux today, the
+      open-source peer <a href="https://github.com/Zackriya-Solutions/meetily">Meetily</a> is
+      excellent — different bets, mutual respect. Plaudy's bets: open on-device diarization,
+      an agent-ready MCP bridge, and a Mac-native feel. Found an error in this table?
+      <a href="https://github.com/uppifyagency/plaudy">Open a PR</a> — we'd rather be accurate than flattering.
+    </p>
+  </div>
+</section>
+
+<section id="proof" aria-labelledby="proof-h">
+  <div class="wrap">
+    <p class="label">04 — The receipts</p>
+    <h2 id="proof-h" style="margin-top:1.2rem">Is it real, or another demo?</h2>
+    <p class="answer">Built in the open and validated live — real speech, real meetings, real database rows.</p>
+    <p class="detail">
+      How we tested: dual-stream capture was validated with live speech on both streams —
+      mic labeled "Me", system audio diarized, merged into one timeline with speaker-echo
+      de-duplicated. Diarization was validated on 1, 2 and 3-speaker recordings, silence
+      included. Auto-capture was validated end-to-end against external audio with the app's
+      own tap excluded. It's all in the repo's handoff docs, with file-and-line citations.
+    </p>
+    <div class="proof-grid">
+      <div class="stat"><b>106</b><span>automated tests green — 102 Rust, 4 MCP</span></div>
+      <div class="stat"><b>0</b><span>bytes of audio sent to any server, ever</span></div>
+      <div class="stat"><b>2</b><span>streams captured natively — mic + system audio</span></div>
+      <div class="stat"><b>MIT</b><span>licensed, built on the excellent <a href="https://github.com/cjpais/Handy" style="color:inherit">Handy</a></span></div>
+    </div>
+  </div>
+</section>
+
+<section id="faq" aria-labelledby="faq-h" style="padding-top:0">
+  <div class="wrap">
+    <hr class="rule">
+    <p class="label" style="margin-top:4rem">05 — Straight answers</p>
+    <h2 id="faq-h" style="margin-top:1.2rem">Questions people actually ask</h2>
+    <div class="faq">
+      <details>
+        <summary>Is Plaudy really private?</summary>
+        <div class="a">
+          <p>Yes — capture, transcription and diarization never touch the network.</p>
+          <p>Recordings and the SQLite database live in <code>~/Library/Application Support</code> and stay there. No telemetry, no Plaudy account, no Plaudy server. The MCP bridge speaks stdio only — no listener, no socket — and opens the database read-only. The only network step is the one you choose: asking your own AI to summarize a transcript, under your own account. Prefer zero network? Point the bridge at a local model.</p>
+        </div>
+      </details>
+      <details>
+        <summary>Does Plaudy know who said what?</summary>
+        <div class="a">
+          <p>Yes — on-device diarization builds a per-speaker timeline with timestamps.</p>
+          <p>pyannote-segmentation + TitaNet run locally via sherpa-onnx. Your mic is labeled "Me"; everyone in the system audio becomes Speaker 1, Speaker 2… When your speakers play the call out loud and the mic re-hears it, an echo de-dup step keeps one person from splitting into two.</p>
+        </div>
+      </details>
+      <details>
+        <summary>Do I need a virtual audio driver like BlackHole?</summary>
+        <div class="a">
+          <p>No — system audio is captured natively via the CoreAudio Process Tap on macOS 14.4+.</p>
+          <p>No virtual devices, no kernel extensions, and no purple screen-recording banner — it uses the audio-capture permission, not screen recording.</p>
+        </div>
+      </details>
+      <details>
+        <summary>How do AI summaries work without a cloud?</summary>
+        <div class="a">
+          <p>Plaudy ships a local MCP server that your Claude connects to on your machine.</p>
+          <p>Instead of bundling a weak local model or renting you theirs, Plaudy exposes your library — list, get, search — to the AI you already use. The transcript text goes to your AI under your account; audio and database never move. The bridge is model-agnostic: point it at a local LLM for a fully offline loop.</p>
+        </div>
+      </details>
+      <details>
+        <summary>How much does it cost?</summary>
+        <div class="a">
+          <p>Nothing. Plaudy is free, open-source, MIT-licensed.</p>
+          <p>Clone the repo and build it — the documented setup needs neither Homebrew nor full Xcode, just Command Line Tools on Apple Silicon. A notarized .dmg is on the roadmap.</p>
+        </div>
+      </details>
+      <details>
+        <summary>What's the catch?</summary>
+        <div class="a">
+          <p>It's early — honest software says so.</p>
+          <p>macOS-only (14.4+), no live transcription yet, auto-capture is opt-in and experimental, and today you build from source. The core — dual-stream capture, diarization, the MCP bridge — is built and validated live, not vaporware. Roadmap and dev onboarding are in the repo.</p>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p class="end">Stop renting your memory. <em>Own it.</em></p>
+    <div class="cta-row">
+      <a class="btn btn-red" href="https://github.com/uppifyagency/plaudy">Star it on GitHub ↗</a>
+      <a class="btn btn-ghost" href="https://github.com/uppifyagency/plaudy#quick-start">Quick start</a>
+    </div>
+    <div class="cred">
+      <p>Plaudy — MIT license. Built on <a href="https://github.com/cjpais/Handy">Handy</a> by CJ Pais &amp; contributors.</p>
+      <p>Made for people who want their meetings remembered — not harvested.</p>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

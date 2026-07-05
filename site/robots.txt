@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://plaudy.vercel.app/sitemap.xml
