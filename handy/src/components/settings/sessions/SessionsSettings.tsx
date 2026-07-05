@@ -106,10 +106,10 @@ export function SessionsSettings() {
             onClick={toggle}
             disabled={busy}
             aria-label={t(active ? "settings.sessions.stop" : "settings.sessions.start")}
-            className={`relative grid h-28 w-28 place-items-center rounded-full text-white shadow-lg transition-all duration-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-logo-primary/40 disabled:opacity-60 ${
+            className={`relative grid h-28 w-28 place-items-center rounded-full text-white shadow-lg transition-all duration-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/40 disabled:opacity-60 ${
               active
                 ? "bg-red-500 hover:bg-red-600 scale-100"
-                : "bg-logo-primary hover:scale-105 hover:shadow-xl"
+                : "bg-accent hover:scale-105 hover:shadow-xl"
             }`}
           >
             {active ? (
@@ -152,7 +152,7 @@ export function SessionsSettings() {
 
         {/* Mode selector — hidden while recording so the hero stays focused */}
         {!active && (
-          <div className="flex gap-1 rounded-full bg-mid-gray/10 p-1">
+          <div className="glass-chip flex gap-1 p-1">
             {MODES.map(({ id, icon: Icon, labelKey }) => (
               <button
                 key={id}
@@ -161,7 +161,7 @@ export function SessionsSettings() {
                 disabled={busy}
                 className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
                   mode === id
-                    ? "bg-background text-text shadow-sm"
+                    ? "bg-accent/90 text-white shadow-sm"
                     : "text-text/60 hover:text-text"
                 }`}
               >

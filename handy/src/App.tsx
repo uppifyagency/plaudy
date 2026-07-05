@@ -258,7 +258,7 @@ function App() {
           unstyled: true,
           classNames: {
             toast:
-              "bg-background border border-mid-gray/20 rounded-lg shadow-lg px-4 py-3 flex items-center gap-3 text-sm",
+              "glass-panel-strong px-4 py-3 flex items-center gap-3 text-sm",
             title: "font-medium",
             description: "text-mid-gray",
           },
@@ -270,14 +270,22 @@ function App() {
           activeSection={currentSection}
           onSectionChange={setCurrentSection}
         />
-        {/* Scrollable content area */}
+        {/* Content area: the Workstation (history) manages its own panes and
+            scrolling; every other section keeps the centered scroll column. */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto">
-            <div className="flex flex-col items-center p-4 gap-4">
+          {currentSection === "history" ? (
+            <div className="flex-1 min-h-0 flex flex-col gap-2 p-4 pt-3">
               <AccessibilityPermissions />
               {renderSettingsContent(currentSection)}
             </div>
-          </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto">
+              <div className="flex flex-col items-center p-4 gap-4">
+                <AccessibilityPermissions />
+                {renderSettingsContent(currentSection)}
+              </div>
+            </div>
+          )}
         </div>
       </div>
       {/* Fixed footer at bottom */}

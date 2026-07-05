@@ -135,7 +135,51 @@ fn should_force_show_permissions_window(app: &AppHandle) -> bool {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        // macOS revokes Accessibility whenever the binary's signature changes
+        // (every rebuild, every unsigned update). Hidden window + missing
+        // accessibility = dictation paste and global shortcuts silently dead
+        // (BUG-1, docs/AUDIT-2026-07-05.md): force the window so the
+        // accessibility onboarding can re-request and re-init Enigo/shortcuts.
+        let force = should_force_show_when_accessibility(|| {
+            tauri::async_runtime::block_on(
+                tauri_plugin_macos_permissions::check_accessibility_permission(),
+            )
+        });
+        if force {
+            log::info!(
+                "macOS accessibility permission missing; forcing main window visible for onboarding"
+            );
+        }
+        return force;
+    }
+
+    #[allow(unreachable_code)]
     false
+}
+
+/// Pure decision seam for `should_force_show_permissions_window` on macOS:
+/// the permissions window must be forced visible iff accessibility is not granted.
+fn should_force_show_when_accessibility(accessibility_granted: impl FnOnce() -> bool) -> bool {
+    !accessibility_granted()
+}
+
+#[cfg(test)]
+mod force_show_tests {
+    use super::should_force_show_when_accessibility;
+
+    #[test]
+    fn missing_accessibility_forces_the_permissions_window() {
+        // The pinned bug: rebuilt binary loses accessibility, app started
+        // hidden, paste/shortcuts died silently. The window MUST be forced.
+        assert!(should_force_show_when_accessibility(|| false));
+    }
+
+    #[test]
+    fn granted_accessibility_respects_start_hidden() {
+        assert!(!should_force_show_when_accessibility(|| true));
+    }
 }
 
 fn initialize_core_logic(app_handle: &AppHandle) {
@@ -482,6 +526,7 @@ pub fn run(cli_args: CliArgs) {
             commands::transcription::get_model_load_status,
             commands::transcription::unload_model_manually,
             commands::history::get_history_entries,
+            commands::history::search_history_entries,
             commands::history::get_session_segments,
             commands::history::toggle_history_entry_saved,
             commands::history::get_audio_file_path,
@@ -602,11 +647,30 @@ pub fn run(cli_args: CliArgs) {
             let mut win_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("/".into()))
                     .title("Handy")
-                    .inner_size(680.0, 570.0)
-                    .min_inner_size(680.0, 570.0)
+                    .inner_size(1000.0, 640.0)
+                    .min_inner_size(780.0, 560.0)
                     .resizable(true)
                     .maximizable(false)
                     .visible(false);
+
+            // Liquid-glass chrome: behind-window vibrancy + transparent overlay
+            // title bar. The webview background stays translucent (App.css), so
+            // the desktop blurs through the whole window.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::utils::config::WindowEffectsConfig;
+                use tauri::window::Effect as WindowEffect;
+                win_builder = win_builder
+                    .transparent(true)
+                    .title_bar_style(tauri::TitleBarStyle::Overlay)
+                    .hidden_title(true)
+                    .effects(WindowEffectsConfig {
+                        effects: vec![WindowEffect::UnderWindowBackground],
+                        state: None,
+                        radius: None,
+                        color: None,
+                    });
+            }
 
             if let Some(data_dir) = portable::data_dir() {
                 win_builder = win_builder.data_directory(data_dir.join("webview"));
@@ -630,6 +694,26 @@ pub fn run(cli_args: CliArgs) {
             app.manage(TranscriptionCoordinator::new(app_handle.clone()));
 
             initialize_core_logic(&app_handle);
+
+            // Enigo + global shortcuts are normally initialized by the frontend
+            // after onboarding (App.tsx). That is temporal coupling across
+            // processes: if the webview never loads (hidden window + dev binary
+            // without vite, or any webview failure) paste and shortcuts die
+            // silently even though accessibility is already granted
+            // (BUG-1, docs/AUDIT-2026-07-05.md). Init from the backend when the
+            // permission already exists; both calls are idempotent, and the
+            // frontend path remains for the post-onboarding grant.
+            #[cfg(target_os = "macos")]
+            if tauri::async_runtime::block_on(
+                tauri_plugin_macos_permissions::check_accessibility_permission(),
+            ) {
+                if let Err(e) = commands::initialize_enigo(app_handle.clone()) {
+                    log::warn!("Startup Enigo init failed: {}", e);
+                }
+                if let Err(e) = commands::initialize_shortcuts(app_handle.clone()) {
+                    log::warn!("Startup shortcuts init failed: {}", e);
+                }
+            }
 
             // Pre-warm GPU/accelerator enumeration on a background thread.
             // The first call into transcribe_rs::whisper_cpp::gpu::list_gpu_devices

@@ -460,7 +460,12 @@
       "sourceMeeting": "Meeting",
       "sourceMic": "Microphone",
       "sourceSystem": "System audio",
-      "sourceDictation": "Dictation"
+      "sourceDictation": "Dictation",
+      "searchPlaceholder": "Search recordings",
+      "noResults": "No recordings match your search",
+      "selectEntry": "Select a recording to see its transcript",
+      "today": "Today",
+      "yesterday": "Yesterday"
     },
     "debug": {
       "title": "Debug",

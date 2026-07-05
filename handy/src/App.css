@@ -1,14 +1,16 @@
 @import "tailwindcss";
 
 @theme {
-  /* Design tokens */
-  --color-text: #0f0f0f;
-  --color-background: #fbfbfb;
-  --color-background-ui: #da5893;
+  /* Design tokens — Liquid Glass */
+  --color-text: #1d1d1f;
+  --color-background: #fbfbfd; /* fallback; made translucent on :root below */
+  --color-background-ui: #5e5ce6;
+  --color-accent: #5e5ce6;
+  --color-surface: rgba(255, 255, 255, 0.55);
   --color-logo-primary: #faa2ca;
   --color-logo-stroke: #382731;
   --color-text-stroke: #f6f6f6;
-  --color-mid-gray: #808080;
+  --color-mid-gray: #6e6e73;
 }
 
 :root {
@@ -17,12 +19,12 @@
   line-height: 24px;
   font-weight: 400;
 
-  /* Colors - Light Theme */
-  /* --color-text: #0f0f0f;
-  --color-background: #fbfbfb;
-  --color-logo-primary: #FAA2CA;
-  --color-logo-stroke: #382731;
-  --color-text-stroke: #f6f6f6; */
+  /* Glass materials (light) */
+  --glass-surface: rgba(255, 255, 255, 0.42);
+  --glass-surface-strong: rgba(255, 255, 255, 0.65);
+  --glass-border: rgba(0, 0, 0, 0.08);
+  --glass-highlight: rgba(255, 255, 255, 0.6);
+  --glass-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
 
   /* Typography settings */
   font-synthesis: none;
@@ -38,9 +40,15 @@
     transparent 70%
   );
 
-  /* Apply colors */
+  /* Apply colors — translucent so the window vibrancy blurs through */
   color: var(--color-text);
-  background-color: var(--color-background);
+  background-color: color-mix(in srgb, #f5f5f7 52%, transparent);
+}
+
+html,
+body,
+#root {
+  background: transparent;
 }
 
 .container {
@@ -55,10 +63,23 @@
 @media (prefers-color-scheme: dark) {
   :root {
     /* Colors - Dark Theme */
-    --color-text: #fbfbfb;
-    --color-background: #2c2b29;
+    --color-text: #f5f5f7;
+    --color-background: #1e1e20;
+    --color-accent: #7d7aff;
+    --color-background-ui: #7d7aff;
+    --color-surface: rgba(40, 40, 44, 0.5);
     --color-logo-primary: #f28cbb;
     --color-logo-stroke: #fad1ed;
+    --color-mid-gray: #98989d;
+
+    /* Glass materials (dark) */
+    --glass-surface: rgba(30, 30, 34, 0.38);
+    --glass-surface-strong: rgba(36, 36, 40, 0.62);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-highlight: rgba(255, 255, 255, 0.08);
+    --glass-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+
+    background-color: color-mix(in srgb, #161618 45%, transparent);
   }
 }
 
@@ -94,6 +115,37 @@
 @layer utilities {
   .text-stroke {
     -webkit-text-stroke: 2px var(--color-text-stroke);
+  }
+
+  /* Liquid Glass materials */
+  .glass-panel {
+    background: var(--glass-surface);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    backdrop-filter: blur(24px) saturate(150%);
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+    box-shadow:
+      inset 0 1px 0 var(--glass-highlight),
+      var(--glass-shadow);
+  }
+
+  .glass-panel-strong {
+    background: var(--glass-surface-strong);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    backdrop-filter: blur(28px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+    box-shadow:
+      inset 0 1px 0 var(--glass-highlight),
+      var(--glass-shadow);
+  }
+
+  .glass-chip {
+    background: var(--glass-surface);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    backdrop-filter: blur(16px) saturate(140%);
+    border: 1px solid var(--glass-border);
+    border-radius: 9999px;
   }
 }
 

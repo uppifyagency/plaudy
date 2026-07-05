@@ -459,7 +459,12 @@
       "sourceMeeting": "Riunione",
       "sourceMic": "Microfono",
       "sourceSystem": "Audio di sistema",
-      "sourceDictation": "Dettatura"
+      "sourceDictation": "Dettatura",
+      "searchPlaceholder": "Cerca nelle registrazioni",
+      "noResults": "Nessuna registrazione corrisponde alla ricerca",
+      "selectEntry": "Seleziona una registrazione per vedere la trascrizione",
+      "today": "Oggi",
+      "yesterday": "Ieri"
     },
     "debug": {
       "title": "Debug",

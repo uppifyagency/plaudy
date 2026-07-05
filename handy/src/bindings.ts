@@ -810,6 +810,17 @@ async getHistoryEntries(cursor: number | null, limit: number | null) : Promise<R
 }
 },
 /**
+ * Workstation search: literal substring match over transcript + title, newest first.
+ */
+async searchHistoryEntries(query: string, limit: number | null) : Promise<Result<HistoryEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("search_history_entries", { query, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Fase 2: the speaker-attributed segments for a history entry (empty when the entry was not
  * diarized). Drives the timeline view; the flat `transcription_text` remains the canonical text.
  */

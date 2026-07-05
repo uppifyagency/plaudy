@@ -20,6 +20,21 @@ pub async fn get_history_entries(
         .map_err(|e| e.to_string())
 }
 
+/// Workstation search: literal substring match over transcript + title, newest first.
+#[tauri::command]
+#[specta::specta]
+pub async fn search_history_entries(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<crate::managers::history::HistoryEntry>, String> {
+    history_manager
+        .search_history_entries(&query, limit.map(|l| l as usize))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Fase 2: the speaker-attributed segments for a history entry (empty when the entry was not
 /// diarized). Drives the timeline view; the flat `transcription_text` remains the canonical text.
 #[tauri::command]

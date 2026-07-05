@@ -270,6 +270,37 @@ mod segment_persistence_tests {
     }
 
     #[test]
+    fn search_matches_transcript_and_title_case_insensitive() {
+        let conn = in_memory_db(); // seeds one row: title 't', text 'full transcript'
+        conn.execute(
+            "INSERT INTO transcription_history (file_name, timestamp, saved, title, transcription_text)
+             VALUES ('m.wav', 1, 0, 'quarterly meeting', 'we shipped the sensor')",
+            [],
+        )
+        .unwrap();
+
+        let by_text = HistoryManager::search_entries_conn(&conn, "TRANSCRIPT", 10).unwrap();
+        assert_eq!(by_text.len(), 1);
+        assert_eq!(by_text[0].transcription_text, "full transcript");
+
+        let by_title = HistoryManager::search_entries_conn(&conn, "quarterly", 10).unwrap();
+        assert_eq!(by_title.len(), 1);
+        assert_eq!(by_title[0].title, "quarterly meeting");
+    }
+
+    #[test]
+    fn search_treats_like_wildcards_as_literals() {
+        let conn = in_memory_db();
+        // '%' would match everything if unescaped; no row contains a literal '%'.
+        assert!(HistoryManager::search_entries_conn(&conn, "%", 10)
+            .unwrap()
+            .is_empty());
+        assert!(HistoryManager::search_entries_conn(&conn, "_", 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn round_trips_segments_and_reuses_a_speaker_label() {
         let mut conn = in_memory_db();
         let segments = vec![
@@ -860,6 +891,41 @@ impl HistoryManager {
         }
 
         Ok(())
+    }
+
+    /// Substring search over transcript + title, newest first. Pure SQL on a
+    /// borrowed connection so it is unit-testable without an AppHandle.
+    /// LIKE wildcards in the user's query are escaped → always a literal match.
+    pub fn search_entries_conn(
+        conn: &Connection,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<HistoryEntry>> {
+        let escaped = query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("%{}%", escaped);
+        let mut stmt = conn.prepare(
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested, status
+             FROM transcription_history
+             WHERE transcription_text LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\'
+             ORDER BY id DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![pattern, limit as i64], Self::map_history_entry)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub async fn search_history_entries(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<HistoryEntry>> {
+        let conn = self.get_connection()?;
+        Self::search_entries_conn(&conn, query, limit.unwrap_or(50).min(100))
     }
 
     pub async fn get_history_entries(
