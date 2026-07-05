@@ -38,6 +38,10 @@
     ],
     "macOS": {
       "files": {},
+      "frameworks": [
+        "target/release/libsherpa-onnx-c-api.dylib",
+        "target/release/libonnxruntime.1.24.4.dylib"
+      ],
       "hardenedRuntime": true,
       "minimumSystemVersion": "14.4",
       "signingIdentity": "-",

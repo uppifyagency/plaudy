@@ -2,6 +2,14 @@ fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     build_apple_intelligence_bridge();
 
+    // The bundled .app carries sherpa's shared dylibs (libsherpa-onnx-c-api +
+    // libonnxruntime, see tauri.conf.json bundle.macOS.frameworks) in
+    // Contents/Frameworks — dyld must look there too, not only next to the binary
+    // (@loader_path, which is where `cargo run`/dev finds them in target/).
+    // Without this rpath the installed app aborts at launch: "Library not loaded".
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path/../Frameworks");
+
     generate_tray_translations();
 
     tauri_build::build()

@@ -6,5 +6,11 @@
     <true/>
     <key>com.apple.security.device.audio-input</key>
     <true/>
+    <!-- The app loads sherpa-onnx's prebuilt dylibs (bundled in Contents/Frameworks) whose
+         signature does not share our Team ID; hardened-runtime library validation would
+         refuse them at launch ("Library not loaded … different Team IDs"). This is the
+         standard, notarization-compatible way to allow third-party dylibs. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
   </dict>
 </plist>

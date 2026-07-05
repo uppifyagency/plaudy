@@ -135,6 +135,24 @@ warning (i restanti sono pre-esistenti in file non toccati).**
 
 ## 2. Trappole nuove / da sapere
 
+- **Bundle macOS e dylib sherpa (scoperto reinstallando l'app — TRE cause a cascata):** il
+  binario linka `libsherpa-onnx-c-api.dylib` + `libonnxruntime.1.24.4.dylib` via `@rpath`.
+  (1) tauri-bundle non le includeva → abort al lancio "Library not loaded"; la vecchia
+  installazione funzionava solo perché le dylib erano state copiate a mano dentro
+  `Contents/MacOS` (connascence of Manual Task, mai documentata). Fix permanente:
+  `tauri.conf.json → bundle.macOS.frameworks` le copia in `Contents/Frameworks` +
+  `build.rs` aggiunge l'rpath `@loader_path/../Frameworks`. Se sherpa/onnxruntime cambiano
+  versione, aggiornare il nome file in `frameworks` (il suffisso `.1.24.4` è nel nome).
+  (2) Con hardened runtime la **library validation** rifiutava comunque le dylib (firme
+  ad-hoc distinte ≠ stesso team) → `Entitlements.plist` ora ha
+  `com.apple.security.cs.disable-library-validation` (standard e compatibile con la futura
+  notarizzazione). (3) A quel punto emergeva un panic **pre-esistente**: il rebrand
+  (34545e2) aveva tolto la config `plugins.updater` ("mai auto-aggiornare ai binari
+  upstream") ma NON la registrazione del plugin → `PluginInitialization` panic a ogni
+  lancio release. Completata la decisione: plugin rimosso da lib.rs + Cargo.toml +
+  capabilities; il frontend degrada in un `console.error` innocuo. **Ogni release install
+  precedente a questo fix crashava al lancio.**
+
 - **`LIMIT -1` interno voluto**: `get_entries_conn` usa `LIMIT -1` per "tutto" quando
   `limit=None` — è deliberato e interno (input clampato); non "sistemarlo".
 - **bindings.ts**: aggiornato a mano (sessionElapsedMs, EntrySource, HistoryEntry.source) — il
