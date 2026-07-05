@@ -9,6 +9,7 @@ built on top of [Handy](https://github.com/cjpais/Handy) as scaffolding.
 - `docs/CODEBASE.md` — extensive technical reference (architecture, what we built & how, file-by-file map, data model).
 - `docs/HANDOFF-FASE2.md` — line-cited forensic detail of the Fase 2 diarization work + the sessions-UI plan.
 - `docs/HANDOFF-AUTOCAPTURE.md` — line-cited forensics of the 2026-07-05 session: per-process auto-capture trigger unshelved (what/how/evidence/remaining) + the resolved MCP-as-AI-path decision.
+- `docs/HANDOFF-LANDING.md` — the 2026-07-05 landing-page session: `site/` live at plaudy.vercel.app (Vercel git-connected, auto-deploys on push), the two skills used (seo-2026-sota + impeccable) and their edit rules, og.png regen procedure, what remains (custom domain, GSC, GEO distribution).
 - `README.md` — project landing page / index.
 - `docs/handy-architecture/` — forensic architecture docs of Handy + the Plaud gap analysis & roadmap.
 - `docs/RIFFADO-CODEWIKI.md` — teardown of the AGPL `riffado` app (a category peer); `docs/DECISIONS.md` — the Keep/Spec/Drop verdict distilled from it (what to adopt vs drop, with the AGPL clean-room boundary).
