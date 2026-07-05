@@ -1,140 +1,155 @@
-# Plaude Local
+<div align="center">
 
-> Open-source, **local-first alternative to [Plaud](https://www.plaud.ai/)** (the AI voice‑recorder / meeting note‑taker) for **macOS** (iPhone planned).
-> Everything — capture, transcription, and speaker diarization ("who said what") — runs **on your machine**. No cloud, no account, your audio never leaves the device.
+# 👂 Plaudy
 
-Built as a fork/extension of **[Handy](https://github.com/cjpais/Handy)** (a Tauri 2 push‑to‑talk dictation app), which we use as scaffolding and extend in place to add long‑form recording, system‑audio capture, and local diarization.
+### The local-first meeting recorder that knows *who said what* — and never phones home.
 
----
+Your Mac records the room, transcribes it, separates the speakers, and hands the result to **your own AI** — **100% on device**. No cloud. No account. No audio ever leaves your machine.
 
-## What it does today
+![macOS](https://img.shields.io/badge/macOS-14.4%2B-000000?logo=apple&logoColor=white)
+![Built with](https://img.shields.io/badge/Rust%20%2B%20Tauri%202-24C8DB?logo=tauri&logoColor=white)
+![On-device](https://img.shields.io/badge/100%25-on--device-4c1)
+![Tests](https://img.shields.io/badge/tests-102%20Rust%20%C2%B7%204%20MCP-2ea44f)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
-| Capability | Status | How |
-| --- | --- | --- |
-| **Push‑to‑talk dictation** (inherited from Handy) | ✅ upstream | Global shortcut → VAD → Whisper/Parakeet → paste |
-| **Long‑form mic "sessions"** (multi‑hour, un‑gated) | ✅ built + demoed | `managers/session.rs`, streamed to disk as PCM → WAV → transcript |
-| **System / loopback audio capture** (record what plays through the Mac) | ✅ built + demoed | CoreAudio **Process Tap** in `audio_toolkit/audio/system_audio.rs` |
-| **Speaker diarization** — "who said what" | ✅ built + validated live | Local **sherpa‑onnx** (pyannote + TitaNet) over the saved WAV in `finalize` |
-| **Offline‑ready models** (bundled, no download for a fresh clone) | ✅ | Diarization models in `resources/models/diarization/`, auto‑installed on first run |
-| **Sessions UI** (start/stop button + Mic/System selector) | ⏳ next | Today driven by CLI flags only — see [docs/HANDOFF-FASE2.md](docs/HANDOFF-FASE2.md) §7 |
-| **iPhone capture** | 🔭 deferred | Recommended path: iPhone‑as‑mic + Mac‑as‑brain (needs full Xcode) |
+[Why](#why-plaudy) · [Features](#features) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Plaudy vs alternatives](#plaudy-vs-the-alternatives) · [Privacy](#privacy-the-whole-point) · [Roadmap](#status--roadmap)
 
-**Live‑validated (2026‑06‑22):** 1‑, 2‑, and 3‑speaker recordings each separated correctly; silence handled gracefully; the two ONNX runtimes (diarizer + ASR) coexist with zero crashes. See the [handoff](docs/HANDOFF-FASE2.md) for the forensic detail.
+</div>
 
 ---
 
-## Quick start (Apple Silicon, this is the verified setup)
+**Plaudy** is an open-source, on-device alternative to Plaud / Otter / Fireflies for **macOS**. One click — or fully hands-free — captures a meeting: your **microphone** *and* the Mac's **system audio** (the other side of the call), as two streams. It lands as a single, **speaker-attributed transcript** you can play back, search, and summarize with **your own Claude** over a local bridge. Built on the excellent [Handy](https://github.com/cjpais/Handy).
 
-This machine builds **without Homebrew and without full Xcode** (Command Line Tools only). The toolchain (Rust, Bun, standalone CMake) is installed but **not on the non‑interactive PATH**, so every build shell needs the prelude below.
-
-```bash
-# 1. Toolchain on PATH + the two required escape hatches
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"
-export CMAKE_POLICY_VERSION_MINIMUM=3.5   # standalone CMake 4.x rejects pre‑3.5 policy floors in native deps
-export HANDY_FORCE_AI_STUB=1              # CLT lacks the @Generable macro plugin → use the Apple Intelligence stub
-
-# 2. Install JS deps (once) and run
-cd handy
-bun install
-bun tauri dev                              # dev: hot‑reload frontend + Rust backend
-
-# Backend only:  cd handy/src-tauri && cargo build
-# Tests:         cd handy/src-tauri && cargo test --lib   # 79 unit tests
-```
-
-- **Drop `HANDY_FORCE_AI_STUB` once full Xcode is installed** (also required later for the iPhone target) — then the real Apple Intelligence Swift bridge compiles.
-- App data lives at `~/Library/Application Support/com.pais.handy/` (`history.db` + `recordings/`).
-- Full platform notes: [handy/BUILD.md](handy/BUILD.md) and [handy/AGENTS.md](handy/AGENTS.md).
-
-### Driving a session today (no UI yet)
-
-Sessions are toggled by launching a second instance of the binary while `bun tauri dev` is running (it forwards the flag via the single‑instance plugin):
-
-```bash
-# mic session
-"handy/src-tauri/target/debug/handy" --toggle-session
-# system‑audio session (record a call / video / podcast)
-"handy/src-tauri/target/debug/handy" --toggle-system-session
-```
-
-Run the same command again to stop. The transcript (with a speaker‑labelled timeline if 2+ voices) appears in **History**.
+> 📸 *Screenshots: drop yours into `docs/screenshots/` and they'll appear here — the History "session cards" and the menu-bar ear are the money shots.*
 
 ---
 
-## Architecture at a glance
+## Why Plaudy?
 
-```
-                    ┌─────────────── capture seam (producer‑agnostic) ───────────────┐
-   mic  (cpal) ─────┤                                                                 │
-                    │   AudioChunk::Samples ──► chunk_sink (faithful, un‑VAD‑gated)   │
- system (CoreAudio  ┤                                                                 │
-  Process Tap) ─────┘                                                                 │
-                                                   │
-                                                   ▼
-                          session.rs:  stream to *.session.pcm  ──(stop)──►  16 kHz mono WAV
-                                                   │
-                                                   ▼  finalize() (off‑thread)
-                    diarize (sherpa) ─┐                                  ┌─ save_entry (flat transcript)
-                                      ├─► align (max temporal overlap) ──┤
-        transcribe_with_segments ─────┘   "who said what"                └─ save_segments (speakers + segments)
-                                                   │
-                                                   ▼
-                              History UI  ►  SpeakerTimeline  ("Speaker N · mm:ss · text")
-```
+Meeting tools make you pick a poison: **convenient but in the cloud** (Plaud, Otter, Fireflies — your private conversations uploaded to someone else's servers), or **local but clunky** (a virtual audio driver to install, a backend server to babysit, and no real "who said what").
 
-The key reuse insight: **mic and system audio feed the *same* consumer** via a `chunk_sink`, so there is no parallel pipeline — any future source just emits `AudioChunk::Samples` + one `EndOfStream`.
+Plaudy refuses the trade-off:
 
-For the full picture (managers, command/event flow, single‑model residency, the data model) read **[docs/CODEBASE.md](docs/CODEBASE.md)**.
+- 🔒 **Actually private.** Capture, transcription (Parakeet/Whisper), and speaker diarization all run **on your Mac**. Nothing is uploaded — ever. No account, no telemetry, no sign-in.
+- 🎙️ **Both sides, natively.** Records your mic **and** the Mac's system audio through the native **CoreAudio Process Tap** (macOS 14.4+). No BlackHole, no virtual devices, no kernel extensions to install.
+- 🗣️ **Who said what.** Real on-device diarization (sherpa-onnx) turns a recording into a **per-speaker timeline** — `Me · 0:04 · "…"` / `Speaker 1 · 0:09 · "…"` — not an anonymous wall of text.
+- 🤖 **Bring your own AI.** Instead of bundling a weak local model, Plaudy exposes your library to **your** AI (Claude / Claude Code) over a local **[MCP](https://modelcontextprotocol.io) server**. Summaries and search use *your* subscription; your recordings never leave the disk to get there.
+- 🪄 **Feels like a Mac app.** A menu-bar "graffetta" — the icon becomes an **ear** 👂 the moment it's listening (an honest, always-visible signal). One click to record, or opt-in **auto-capture** that starts on its own when audio plays.
+- 🧩 **One native app.** No server process, no Docker, no Python backend. Open it and record.
 
 ---
 
-## Repository map
+## Features
 
-```
-.
-├── README.md                     ← you are here (landing page / index)
-├── CLAUDE.md                     ← agent operating instructions for this repo
-├── docs/
-│   ├── CODEBASE.md               ← extensive technical documentation (start here to understand the code)
-│   ├── HANDOFF-FASE2.md          ← forensic engineering handoff (what/how/remains, line‑cited)
-│   └── handy-architecture/       ← forensic docs of upstream Handy + the Plaud gap analysis
-├── handy/                        ← the app (our fork of Handy — we extend it IN PLACE)
-│   ├── src-tauri/                ← Rust backend (Tauri 2)
-│   │   ├── src/managers/         ← session.rs, diarization.rs, model.rs, transcription.rs, history.rs …
-│   │   ├── src/audio_toolkit/    ← capture: recorder.rs, system_audio.rs, VAD
-│   │   ├── src/commands/         ← Tauri command handlers (session.rs, models.rs, history.rs …)
-│   │   └── resources/models/     ← bundled models (VAD + diarization seg/emb, auto‑installed on first run)
-│   └── src/                      ← React/TS frontend (settings shell + History timeline)
-├── .claude/                      ← project‑local Claude Code config + Ponytail install
-└── .nwave/                       ← nWave methodology config
-```
-
----
-
-## Documentation index
-
-| Doc | Read it for |
+| | |
 | --- | --- |
-| **[docs/CODEBASE.md](docs/CODEBASE.md)** | The complete technical reference: architecture, what we built across Fase 0/1/2 and **how**, file‑by‑file map of our changes, the data model, build‑system specifics, and what remains. **New devs start here.** |
-| **[docs/HANDOFF-FASE2.md](docs/HANDOFF-FASE2.md)** | Line‑cited forensic state of the diarization work, the build de‑risk spikes, and the detailed plans for the Sessions UI. |
-| **[docs/handy-architecture/](docs/handy-architecture/)** | How upstream Handy works (capture pipeline, VAD, transcription engines, model management, persistence) + the original Plaud gap analysis. |
-| **[CLAUDE.md](CLAUDE.md)** / **[handy/AGENTS.md](handy/AGENTS.md)** | Conventions, build commands, i18n rules, and how AI agents should work in this repo. |
+| 🎧 **Dual-stream meeting capture** | Mic (`"Me"`) + system audio, mixed into one playable WAV, kept separate in the transcript. |
+| 🗣️ **On-device speaker diarization** | pyannote-segmentation + TitaNet via sherpa-onnx — fully offline. |
+| 🧠 **Local ASR** | Parakeet / Whisper (whisper-rs, Metal-accelerated). |
+| 🫧 **Echo de-dup (`drop_bleed`)** | When audio plays over speakers and the mic re-hears it, one person isn't split into two. |
+| 👂 **Menu-bar ear** | The tray icon turns into an ear while recording — you always know when it listens. |
+| 🪄 **Opt-in auto-capture** | Senses when another app is emitting audio (per-process CoreAudio attribution, *your own tap excluded*) and starts a session on its own. |
+| 🗂️ **History as result, not dump** | Each recording is a **session card**: source icon, topic title, duration, speaker chips, and a collapsible speaker timeline + player. |
+| 🔌 **Local MCP bridge** | A dependency-free, read-only MCP server lets Claude `list` / `get` / `search` your recordings — locally. |
+| 📦 **Offline-ready** | Diarization models are bundled; a fresh clone works without downloading anything. |
+| ♻️ **Crash-safe & self-healing** | Sessions stream to disk frame-by-frame; an interrupted recording is recovered on next launch. |
 
 ---
 
-## What's next (for the incoming developer)
+## How it works
 
-1. **Sessions UI** — replace the CLI flags with a real view: a start/stop button, a Mic/System selector, and a live "recording" indicator. Backend command + 3‑touch frontend change. Plan in [HANDOFF §7](docs/HANDOFF-FASE2.md).
-2. **A "Enable diarization" download button** — the `download_diarization_models` command exists and works; it just needs a UI home (the Sessions view). Models are also bundled now, so this is a fallback for non‑bundled builds.
-3. **Clustering threshold tuning** — only if a rapid‑alternation recording is ever seen to over‑merge speakers. Defaults are good for long‑turn conversations (validated). Don't build pre‑emptively.
-4. **iPhone target** — Handy has no iOS support today. Recommended: iPhone as a capture client streaming to the Mac "brain". Needs full Xcode.
+```mermaid
+flowchart LR
+  mic["🎙️ Microphone"] --> cap
+  sys["🔊 System audio<br/>(CoreAudio Process Tap)"] --> cap
+  cap["Faithful capture<br/>(chunk_sink, un-VAD-gated)"] --> mix["Mix → 16 kHz WAV"]
+  mix --> diar["Diarize<br/>(sherpa-onnx)"]
+  mix --> asr["Transcribe<br/>(Parakeet / Whisper)"]
+  diar --> merge["Merge → who said what"]
+  asr --> merge
+  merge --> hist[("History<br/>speaker timeline")]
+  hist --> mcp["Local MCP server<br/>(read-only)"]
+  mcp --> ai["🤖 Your Claude<br/>summarize · search"]
+```
+
+The key design insight: **mic and system audio feed the *same* consumer** through a producer-agnostic `chunk_sink`, so there's no parallel pipeline — any future source just emits samples. Everything downstream (mix → diarize → transcribe → merge → speaker timeline) is shared. Deep dive: **[docs/CODEBASE.md](docs/CODEBASE.md)**.
 
 ---
 
-## Credits & license
+## Quick start
 
-- Built on **[Handy](https://github.com/cjpais/Handy)** by CJ Pais et al. (MIT). Upstream architecture docs are mirrored under `docs/handy-architecture/`.
-- Diarization uses **[sherpa‑onnx](https://github.com/k2-fsa/sherpa-onnx)** (k2‑fsa) with pyannote‑segmentation‑3.0 + NeMo TitaNet‑small models.
-- This project inherits Handy's **MIT** license. See [handy/LICENSE](handy/LICENSE).
+**Apple Silicon Mac.** The verified setup builds **without Homebrew and without full Xcode** (Command Line Tools only).
 
-> **Private handoff repo** — this is a working snapshot passed between developers, not a public release. The git history of the upstream Handy clone is intentionally not preserved here; upstream lives at the link above.
+```bash
+git clone https://github.com/uppifyagency/plaudy.git && cd plaudy/handy
+
+# Toolchain on PATH + two escape hatches (CLT-only build)
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"
+export CMAKE_POLICY_VERSION_MINIMUM=3.5   # standalone CMake 4.x rejects pre-3.5 policy floors in native deps
+export HANDY_FORCE_AI_STUB=1              # CLT lacks the @Generable macro plugin → Apple Intelligence stub
+
+bun install
+bun tauri dev                             # run it (hot-reload) …
+bun tauri build                           # … or build Plaudy.app + Plaudy_*.dmg
+```
+
+- **First launch:** grant **Microphone** and **Audio Recording** permission (no Screen Recording needed — the Process Tap uses the audio-capture TCC permission, so there's no purple banner).
+- **Record a meeting:** click the menu-bar **graffetta**, or run the app and hit the record hero. Watch the tray icon become an **ear** 👂. Stop, and the speaker-attributed transcript appears in **History**.
+- **Summarize with Claude:** the local MCP server is registered in [`.mcp.json`](.mcp.json) — point Claude / Claude Code at this repo and ask it to summarize or search your sessions.
+- **Tests:** `cd handy/src-tauri && cargo test --lib` → 102 passed · `cd handy/mcp && bun test` → 4 pass.
+
+> The current `.dmg` is **ad-hoc signed** (build-from-source or right-click → Open on first launch). A Developer-ID-signed & notarized release is on the roadmap. Full build notes: [handy/BUILD.md](handy/BUILD.md).
+
+---
+
+## Plaudy vs the alternatives
+
+| | **👂 Plaudy** | Plaud / Otter / Fireflies *(cloud)* | Meetily *(open-source)* |
+| --- | :---: | :---: | :---: |
+| Runs **fully on-device** | ✅ | ❌ uploads to their servers | ⚠️ local, but runs a backend server |
+| **Account** required | ❌ none | ✅ | ❌ |
+| Audio **leaves your machine** | ❌ never | ✅ always | ❌ (if self-hosted) |
+| **Who said what** (diarization) | ✅ on-device, per-segment timeline | ✅ (in their cloud) | ⚠️ basic / varies |
+| **System-audio** capture | ✅ native Process Tap, no extra driver | n/a | ⚠️ setup / virtual device |
+| **AI** summaries | 🤖 *your* AI via local MCP | their cloud LLM | bundled local/cloud LLM |
+| **Architecture** | single native macOS app | SaaS | app **+** server |
+| **Price** | free · open-source | subscription | free · open-source |
+
+<sub>Comparison based on publicly available information as of 2026 and each project's stated defaults. Something wrong? Open a PR — we'd rather be accurate than flattering.</sub>
+
+**The one-line difference:** cloud tools give you AI at the cost of privacy; other local tools give you privacy at the cost of polish and a server to run. Plaudy is a **single native app that keeps your audio on the Mac *and* plugs into the AI you already pay for.**
+
+---
+
+## Privacy — the whole point
+
+- **No network egress for your data.** ASR + diarization run on-device (ONNX). The MCP server speaks **stdio only** — no listener, no socket, no fetch.
+- **The MCP bridge is read-only.** It opens `history.db` `readonly`; every query is parameterized. It physically cannot alter or exfiltrate a recording.
+- **Honest signals.** The menu-bar ear shows when Plaudy is listening; auto-capture is **opt-in** and never records your bare microphone on its own — the mic only joins a session that system audio has already triggered.
+- **No secrets, no telemetry, no accounts.** Recordings and the SQLite DB live in `~/Library/Application Support/` on your machine.
+
+---
+
+## Status & roadmap
+
+**Early, but real** — core capture, diarization, and the MCP bridge are built and **validated live**.
+
+- ✅ Dual-stream meeting capture · on-device diarization · echo de-dup · History session cards · menu-bar ear · local MCP bridge · bundled offline models · 102 Rust + 4 MCP tests green.
+- 🧪 **Auto-capture** (per-process audio trigger) — works E2E, **opt-in / experimental** pending real-meeting hardening.
+- 🔜 Developer-ID signing + **notarized `.dmg`** · in-app search & export · "Enable diarization" one-tap download · broader i18n.
+- 🔭 iPhone capture (iPhone-as-mic + Mac-as-brain) — deferred (needs full Xcode).
+
+Working on it or want to help? Start at **[docs/HANDOFF-GIANNI.md](docs/HANDOFF-GIANNI.md)** (dev onboarding) and **[docs/CODEBASE.md](docs/CODEBASE.md)** (technical reference).
+
+---
+
+## Built on Handy · Credits · License
+
+Plaudy stands on the shoulders of **[Handy](https://github.com/cjpais/Handy)** by CJ Pais & contributors (MIT) — a superb Tauri push-to-talk dictation app we extend in place to add long-form recording, system-audio capture, diarization, the MCP bridge, and the meeting UX. Upstream architecture docs are mirrored under [`docs/handy-architecture/`](docs/handy-architecture/).
+
+- Diarization: **[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)** (k2-fsa) with pyannote-segmentation-3.0 + NeMo TitaNet-small.
+- ASR: whisper-rs / Parakeet · Audio: cpal + CoreAudio · UI: React + Tauri 2.
+
+Licensed **MIT** (inherited from Handy). See [handy/LICENSE](handy/LICENSE).
+
+<div align="center"><sub>Made for people who want their meetings remembered — not harvested.</sub></div>
