@@ -361,28 +361,35 @@ impl SessionManager {
             wav_path,
             started,
         });
-        // Release the lock BEFORE emitting. The SessionStateChanged listener (lib.rs) runs
-        // INLINE on this thread and calls `is_active()`, which re-locks `active`. A
-        // std::sync::Mutex is non-reentrant, so emitting while still holding `guard` deadlocks
-        // the start path. (stop() is already safe: it `.take()`s the guard as a temporary, so
-        // it is dropped before stop's own emit.)
-        drop(guard);
-        // Re-read the live state at emit time: if a concurrent stop() slipped into the window
-        // after the lock release, the last event on the wire must not resurrect a session that
-        // is already gone — the UI trusts the most recent event.
-        let _ = SessionStateChanged {
-            active: self.is_active(),
-            source: primary,
-        }
-        .emit(&self.app);
+        self.unlock_and_emit(guard, primary);
         Ok(())
     }
 
+    /// The ONE way to announce a session state change. Takes the lock guard BY VALUE and
+    /// drops it before emitting: the `SessionStateChanged` listener (lib.rs) runs INLINE on
+    /// this thread and re-enters `is_active()`, so emitting while holding the non-reentrant
+    /// lock deadlocks — a bug this codebase has already shipped once. Owning the guard here
+    /// makes the unlock-before-emit order a compile-time property instead of a comment: a
+    /// caller cannot still hold the lock after this call, because it gave the guard away.
+    ///
+    /// The state is re-read at emit time so the LAST event on the wire always reflects
+    /// reality — a concurrent start/stop that slipped into the post-unlock window wins.
+    fn unlock_and_emit(
+        &self,
+        guard: std::sync::MutexGuard<'_, Option<ActiveSession>>,
+        source: Option<Source>,
+    ) {
+        drop(guard);
+        let _ = SessionStateChanged {
+            active: self.is_active(),
+            source,
+        }
+        .emit(&self.app);
+    }
+
     pub fn stop(&self) -> Result<()> {
-        let session = self
-            .active_guard()
-            .take()
-            .ok_or_else(|| anyhow!("No active session"))?;
+        let mut guard = self.active_guard();
+        let session = guard.take().ok_or_else(|| anyhow!("No active session"))?;
 
         let ActiveSession {
             tracks,
@@ -390,14 +397,10 @@ impl SessionManager {
             started: _,
         } = session;
 
-        // Flip the live indicator to idle as soon as the user stops — before the (possibly slow)
-        // frame drain — so the UI feels responsive. Finalization and the row that follows happen
-        // off-thread. (Same emit-time re-read as start_sources: a concurrent start wins.)
-        let _ = SessionStateChanged {
-            active: self.is_active(),
-            source: None,
-        }
-        .emit(&self.app);
+        // Flip the live indicator to idle as soon as the user stops — before the (possibly
+        // slow) frame drain — so the UI feels responsive. Finalization and the row that
+        // follows happen off-thread.
+        self.unlock_and_emit(guard, None);
 
         // Tear down every track, then compute each one's offset from the session's first
         // capture instant — that delta becomes leading silence in finalize, so the mixed WAV
@@ -436,21 +439,15 @@ impl SessionManager {
     /// auto-capture to abandon a *false start* (triggered by the OS sensor, but no real audio
     /// arrived within probation) so it never pollutes History.
     pub fn cancel(&self) -> Result<()> {
-        let session = self
-            .active_guard()
-            .take()
-            .ok_or_else(|| anyhow!("No active session"))?;
+        let mut guard = self.active_guard();
+        let session = guard.take().ok_or_else(|| anyhow!("No active session"))?;
         let ActiveSession {
             tracks,
             wav_path: _,
             started: _,
         } = session;
 
-        let _ = SessionStateChanged {
-            active: self.is_active(),
-            source: None,
-        }
-        .emit(&self.app);
+        self.unlock_and_emit(guard, None);
 
         for track in tracks {
             let (pcm_path, source, _) = teardown_track(track);
@@ -1469,6 +1466,29 @@ mod tests {
             "a loud frame must mark system audio as heard"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audio_activity_gates_probation_and_measures_idle_from_session_start() {
+        let act = AudioActivity::new();
+        act.begin();
+        assert!(!act.heard_audio(), "a fresh session has heard nothing");
+        // Before the first loud frame, idle is measured from session start (so the
+        // supervisor's silent-start failsafe has a clock even in total silence).
+        std::thread::sleep(Duration::from_millis(15));
+        assert!(act.idle() >= Duration::from_millis(10));
+
+        act.mark();
+        assert!(act.heard_audio(), "a loud frame flips the probation gate");
+        assert!(
+            act.idle() < Duration::from_millis(10),
+            "idle restarts at the last loud frame"
+        );
+
+        // begin() must fully reset — stop/cancel call it so the NEXT idle period can never
+        // read the previous session's `heard` as its own.
+        act.begin();
+        assert!(!act.heard_audio());
     }
 
     // --- persist_session behind its seams (the previously untestable finalize half) --------

@@ -391,6 +391,19 @@ mod tests {
     }
 
     #[test]
+    fn listening_maps_to_the_ear_asset_on_every_theme() {
+        // The behavioral claim (not the compiler's exhaustiveness): whatever the theme, a
+        // recording session shows the ear — the product's honest "I'm listening" mark.
+        use super::{get_icon_path, AppTheme};
+        for theme in [AppTheme::Dark, AppTheme::Light, AppTheme::Colored] {
+            assert_eq!(
+                get_icon_path(theme, TrayIconState::Listening),
+                "resources/tray_listening.png"
+            );
+        }
+    }
+
+    #[test]
     fn active_dictation_states_may_override_the_ear_temporarily() {
         // While a dictation is actually recording/transcribing, showing that state is
         // honest too — Idle is the only request a live session must veto.

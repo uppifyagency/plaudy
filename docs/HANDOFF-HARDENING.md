@@ -177,6 +177,29 @@ warning (i restanti sono pre-esistenti in file non toccati).**
    rinviato per Rule of Three — la duplicazione residua tra i due recorder è ora solo il
    lifecycle cmd_tx/worker (downmix e consumer sono già condivisi).
 
+**Terza passata (punch list di verifica esterna, stessa data):**
+
+- ✅ **Guard del deadlock emit-nel-lock → STRUTTURALE, non un test.** `unlock_and_emit`
+  prende il `MutexGuard` **per valore** e lo droppa prima di emettere: l'ordine sbagliato
+  (emettere tenendo il lock) è ora *incompilabile* — il chiamante ha ceduto il guard, non
+  può più tenerlo. Tutti e tre gli emit (start/stop/cancel) passano di lì, incluso il
+  re-read di `is_active()` a emit-time (l'ultimo evento sul wire riflette la realtà).
+  Il compilatore è un guard più forte di un test rosso; il test di emissione end-to-end
+  resta nel deferral sopra.
+- ✅ Test `AudioActivity` (begin/mark/heard/idle, incluso idle-prima-del-primo-loud e il
+  reset su begin) e test tray "Listening → orecchio su ogni tema" (la claim comportamentale,
+  non l'esaustività che garantisce già il compilatore).
+- **Correzione del registro:** l'invariante `PROBATION < STOP_AFTER` della lista originale
+  è **non applicabile** dopo il redesign — i due timer sono disaccoppiati (probation 60 s è
+  un failsafe sul canale "mai sentito audio"; STOP_AFTER 4 s lavora sul canale loudness
+  post-audio), quindi nessun `debug_assert!` ha senso: chiuso per eliminazione
+  dell'invariante, non per omissione. Il decode per-track full-RAM in `read_pcm_i16` è il
+  **pavimento di design** (whisper consuma il buffer intero): il picco è UN track, non la
+  sessione; scendere sotto richiederebbe streaming dentro l'ASR. Due voci della punch list
+  (recovery dual-stream, righe duplicate) erano già chiuse dalla seconda passata —
+  verificate di nuovo contro il codice (doc a `recover_interrupted`, test
+  `recovery_groups_a_dual_crash_into_one_session_mic_first`).
+
 **Feature (gap-analysis Meetily + product):**
 
 6. **Validazione real-meeting dell'auto-capture** (il gate per il default-on). La scena
