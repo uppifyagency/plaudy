@@ -6,13 +6,15 @@
 
 Your Mac records the room, transcribes it, separates the speakers, and hands the result to **your own AI** — **100% on device**. No cloud. No account. No audio ever leaves your machine.
 
+<img src="assets/hero.svg" alt="How a Plaudy session looks: the macOS menu-bar icon becomes an ear while recording; microphone and system audio flow as two waveforms into one session card, where the transcript reads as a per-speaker timeline (Me at 0:04, Speaker 1 at 0:09, Speaker 2 at 0:23), transcribed and diarized on the Mac." width="830">
+
 ![macOS](https://img.shields.io/badge/macOS-14.4%2B-000000?logo=apple&logoColor=white)
 ![Built with](https://img.shields.io/badge/Rust%20%2B%20Tauri%202-24C8DB?logo=tauri&logoColor=white)
 ![On-device](https://img.shields.io/badge/100%25-on--device-4c1)
 ![Tests](https://img.shields.io/badge/tests-102%20Rust%20%C2%B7%204%20MCP-2ea44f)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-[Why](#why-plaudy) · [Features](#features) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Plaudy vs alternatives](#plaudy-vs-the-alternatives) · [Privacy](#privacy-the-whole-point) · [Roadmap](#status--roadmap)
+**[plaudy.vercel.app](https://plaudy.vercel.app)** · [Why](#why-plaudy) · [Features](#features) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Plaudy vs alternatives](#plaudy-vs-the-alternatives) · [Privacy](#privacy-the-whole-point) · [Roadmap](#status--roadmap)
 
 </div>
 
