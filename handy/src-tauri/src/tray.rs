@@ -8,7 +8,7 @@ use log::{error, info, warn};
 use std::sync::Arc;
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::tray::TrayIcon;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon};
 use tauri::{AppHandle, Manager, Theme};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -59,8 +59,8 @@ pub fn get_icon_path(theme: AppTheme, state: TrayIconState) -> &'static str {
         (AppTheme::Light, TrayIconState::Idle) => "resources/tray_idle_dark.png",
         (AppTheme::Light, TrayIconState::Recording) => "resources/tray_recording_dark.png",
         (AppTheme::Light, TrayIconState::Transcribing) => "resources/tray_transcribing_dark.png",
-        // Colored theme uses pink icons (for Linux)
-        (AppTheme::Colored, TrayIconState::Idle) => "resources/handy.png",
+        // Colored theme (Linux) — the ear is the brand mark; idle reuses the dimmed variant.
+        (AppTheme::Colored, TrayIconState::Idle) => "resources/tray_idle.png",
         (AppTheme::Colored, TrayIconState::Recording) => "resources/recording.png",
         (AppTheme::Colored, TrayIconState::Transcribing) => "resources/transcribing.png",
         // Listening (a session is capturing) — the ear glyph. macOS renders the tray as a template
@@ -80,6 +80,16 @@ fn resolve_tray_state(requested: TrayIconState, session_active: bool) -> TrayIco
         (TrayIconState::Idle, true) => TrayIconState::Listening,
         (other, _) => other,
     }
+}
+
+/// The "graffetta" gesture: a plain left-click on the menu-bar icon toggles the meeting
+/// session directly — the menu stays on right-click. Fires on release (Up) so a press that
+/// turns into a drag never toggles. Linux tray backends don't deliver reliable click events,
+/// so there the menu remains the entry point and this never fires.
+pub fn is_session_toggle_click(button: &MouseButton, state: &MouseButtonState) -> bool {
+    !cfg!(target_os = "linux")
+        && matches!(button, MouseButton::Left)
+        && matches!(state, MouseButtonState::Up)
 }
 
 fn session_is_active(app: &AppHandle) -> bool {
@@ -122,9 +132,9 @@ pub fn tray_tooltip() -> String {
 
 fn version_label() -> String {
     if cfg!(debug_assertions) {
-        format!("Handy v{} (Dev)", env!("CARGO_PKG_VERSION"))
+        format!("Plaudy v{} (Dev)", env!("CARGO_PKG_VERSION"))
     } else {
-        format!("Handy v{}", env!("CARGO_PKG_VERSION"))
+        format!("Plaudy v{}", env!("CARGO_PKG_VERSION"))
     }
 }
 
@@ -401,6 +411,31 @@ mod tests {
                 "resources/tray_listening.png"
             );
         }
+    }
+
+    use super::is_session_toggle_click;
+    use tauri::tray::{MouseButton, MouseButtonState};
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn left_click_release_on_the_graffetta_toggles_the_session() {
+        assert!(is_session_toggle_click(
+            &MouseButton::Left,
+            &MouseButtonState::Up
+        ));
+    }
+
+    #[test]
+    fn other_buttons_or_a_press_never_toggle() {
+        // Right-click owns the menu; a press (Down) may become a drag — only Left+Up toggles.
+        assert!(!is_session_toggle_click(
+            &MouseButton::Right,
+            &MouseButtonState::Up
+        ));
+        assert!(!is_session_toggle_click(
+            &MouseButton::Left,
+            &MouseButtonState::Down
+        ));
     }
 
     #[test]

@@ -53,8 +53,7 @@ export const ListRow: React.FC<{
         >
           {time}
           {durationMs > 0 && ` · ${formatClock(durationMs / 1000)}`}
-          {isFailed(entry) &&
-            ` · ${t("settings.history.transcriptionFailed")}`}
+          {isFailed(entry) && ` · ${t("settings.history.transcriptionFailed")}`}
         </span>
       </span>
       {transcribing && (

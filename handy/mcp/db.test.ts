@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { listSessions, getSession, searchSessions } from "./db";
+import { mkdtempSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { listSessions, getSession, searchSessions, openDb } from "./db";
 import { createDb, seedSessions } from "./fixture";
 
 function seed(): Database {
@@ -9,7 +12,12 @@ function seed(): Database {
   return db;
 }
 
-function insertSession(db: Database, id: number, text: string, timestamp = id * 1000): void {
+function insertSession(
+  db: Database,
+  id: number,
+  text: string,
+  timestamp = id * 1000,
+): void {
   db.run(
     "INSERT INTO transcription_history (id, file_name, timestamp, title, transcription_text, status) VALUES (?, ?, ?, ?, ?, 'done')",
     [id, `${id}.wav`, timestamp, `Session ${id}`, text],
@@ -30,7 +38,10 @@ test("getSession returns full transcript and ordered speaker segments", () => {
   const s = getSession(db, 1)!;
   expect(s.title).toBe("Standup");
   expect(s.segments).toHaveLength(2);
-  expect(s.segments[0]).toMatchObject({ speaker: "Me", text: "Parliamo del budget" });
+  expect(s.segments[0]).toMatchObject({
+    speaker: "Me",
+    text: "Parliamo del budget",
+  });
   expect(s.segments[1].speaker).toBe("Speaker 1");
 });
 
@@ -118,6 +129,25 @@ test("a term appearing in several segments of one session yields one deduped hit
     "INSERT INTO transcription_segments (history_id, speaker_id, start_ms, end_ms, text) VALUES (1, 10, 3000, 4000, 'budget di nuovo'), (1, 11, 4000, 5000, 'ancora il budget')",
   );
   expect(searchSessions(db, "budget", 10).map((h) => h.id)).toEqual([1]);
+});
+
+test("openDb opens a checkpointed WAL db (app closed), rejects writes, throws on a missing file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "plaude-mcp-"));
+  const path = join(dir, "history.db");
+
+  // Simulate the app: create in WAL mode, write, close cleanly (checkpoint removes -shm/-wal).
+  const writer = new Database(path);
+  writer.exec("PRAGMA journal_mode = WAL;");
+  writer.run("CREATE TABLE t (x)");
+  writer.run("INSERT INTO t VALUES (1)");
+  writer.close();
+
+  const db = openDb(path);
+  expect(db.query("SELECT COUNT(*) n FROM t").get()).toMatchObject({ n: 1 });
+  expect(() => db.run("INSERT INTO t VALUES (2)")).toThrow(); // query_only invariant
+  db.close();
+
+  expect(() => openDb(join(dir, "nope.db"))).toThrow(); // no silent empty-DB creation
 });
 
 test("timestamp is passed through unconverted, in SECONDS", () => {

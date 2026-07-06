@@ -6,7 +6,9 @@
     "unloadModel": "モデルをアンロード",
     "model": "モデル",
     "quit": "終了",
-    "cancel": "キャンセル"
+    "cancel": "キャンセル",
+    "startRecording": "録音を開始",
+    "stopRecording": "録音を停止"
   },
   "sidebar": {
     "general": "一般",
@@ -15,7 +17,8 @@
     "postProcessing": "後処理",
     "history": "履歴",
     "debug": "デバッグ",
-    "about": "概要"
+    "about": "概要",
+    "sessions": "セッション"
   },
   "onboarding": {
     "subtitle": "開始するには、文字起こしモデルを選択してください",
@@ -100,7 +103,7 @@
     },
     "permissions": {
       "title": "権限が必要です",
-      "description": "Handyが正常に動作するにはいくつかの権限が必要です。",
+      "description": "Plaudyが正常に動作するにはいくつかの権限が必要です。",
       "microphone": {
         "title": "マイクへのアクセス",
         "description": "文字起こしのためにあなたの声を聞くために必要です。"
@@ -176,7 +179,7 @@
     "general": {
       "title": "一般",
       "shortcut": {
-        "title": "Handyショートカット",
+        "title": "Plaudyショートカット",
         "description": "音声録音を開始するキーボードショートカットを設定",
         "loading": "ショートカットを読み込み中...",
         "none": "ショートカットが設定されていません",
@@ -276,11 +279,11 @@
       },
       "autostart": {
         "label": "起動時に実行",
-        "description": "コンピューターにログインしたときにHandyを自動的に起動。"
+        "description": "コンピューターにログインしたときにPlaudyを自動的に起動。"
       },
       "showTrayIcon": {
         "label": "トレイアイコンを表示",
-        "description": "システムトレイにHandyのアイコンを表示します。"
+        "description": "システムトレイにPlaudyのアイコンを表示します。"
       },
       "overlay": {
         "title": "オーバーレイ位置",
@@ -431,7 +434,20 @@
       "retranscribe": "再文字起こし",
       "retranscribeError": "再文字起こしに失敗しました。もう一度お試しください。",
       "transcribing": "文字起こし中...",
-      "transcriptionFailed": "文字起こしに失敗しました。リトライアイコンを使用して再文字起こしできます。"
+      "transcriptionFailed": "文字起こしに失敗しました。リトライアイコンを使用して再文字起こしできます。",
+      "noSpeech": "音声が検出されませんでした",
+      "unknownSpeaker": "不明",
+      "expand": "詳細を表示",
+      "collapse": "詳細を隠す",
+      "sourceMeeting": "会議",
+      "sourceMic": "マイク",
+      "sourceSystem": "システム音声",
+      "sourceDictation": "音声入力",
+      "searchPlaceholder": "録音を検索",
+      "noResults": "検索に一致する録音はありません",
+      "selectEntry": "録音を選択すると文字起こしが表示されます",
+      "today": "今日",
+      "yesterday": "昨日"
     },
     "debug": {
       "title": "デバッグ",
@@ -445,7 +461,7 @@
       },
       "updateChecks": {
         "label": "アップデートを確認",
-        "description": "Handyの新しいバージョンを自動的にチェック"
+        "description": "Plaudyの新しいバージョンを自動的にチェック"
       },
       "soundTheme": {
         "label": "サウンドテーマ",
@@ -513,29 +529,46 @@
       "title": "概要",
       "version": {
         "title": "バージョン",
-        "description": "Handyの現在のバージョン"
+        "description": "Plaudyの現在のバージョン"
       },
       "appDataDirectory": {
         "title": "アプリデータディレクトリ",
-        "description": "Handyがデータを保存する場所"
+        "description": "Plaudyがデータを保存する場所"
       },
       "sourceCode": {
         "title": "ソースコード",
         "description": "ソースコードを見て貢献する",
         "button": "GitHubで見る"
       },
-      "supportDevelopment": {
-        "title": "開発を支援",
-        "description": "Handyの開発を支援してください",
-        "button": "寄付する"
-      },
       "acknowledgments": {
         "title": "謝辞",
         "whisper": {
           "title": "Whisper.cpp",
           "description": "OpenAIのWhisper自動音声認識モデルの高性能推論",
-          "details": "Handyは高速でローカルな音声からテキストへの変換にWhisper.cppを使用しています。Georgi Gerganov氏と貢献者の皆様の素晴らしい仕事に感謝します。"
+          "details": "Plaudyは高速でローカルな音声からテキストへの変換にWhisper.cppを使用しています。Georgi Gerganov氏と貢献者の皆様の素晴らしい仕事に感謝します。"
         }
+      }
+    },
+    "sessions": {
+      "title": "マイク + システム音声をデバイス上で文字起こし",
+      "description": "マイクまたはこのMacのシステム音声から長時間の録音をキャプチャします。停止すると文字起こしされ、履歴に追加されます。",
+      "sourceLabel": "ソース",
+      "sourceMic": "マイク",
+      "sourceSystem": "システム音声",
+      "start": "録音を開始",
+      "stop": "録音を停止",
+      "recording": "録音中…",
+      "modeMeeting": "会議",
+      "modeMic": "マイク",
+      "modeSystem": "システム音声",
+      "tapToStart": "タップして録音",
+      "capturingMeeting": "あなた + システム音声をキャプチャ中",
+      "capturingMic": "マイクをキャプチャ中",
+      "capturingSystem": "システム音声をキャプチャ中",
+      "privacyNote": "マイクとこのMacの音声を話者ごとに分けた2つのストリームとして録音します。データがMacの外に出ることはありません。",
+      "autoCapture": {
+        "title": "自動キャプチャ",
+        "description": "他のアプリが音声を再生すると(通話や動画など)自動的に会議セッションを開始し、静かになると停止します。実験的機能 — すべてこのMac内で完結します。"
       }
     }
   },
@@ -576,11 +609,16 @@
     "off": "オフ",
     "yes": "はい",
     "no": "いいえ",
-    "noOptionsFound": "オプションが見つかりません"
+    "noOptionsFound": "オプションが見つかりません",
+    "copy": "コピー",
+    "copyToClipboard": "クリップボードにコピー",
+    "notAvailable": "利用できません",
+    "selectOption": "オプションを選択...",
+    "previewSoundTheme": "サウンドテーマを試聴(開始音、次に停止音を再生)"
   },
   "accessibility": {
     "permissionsRequired": "アクセシビリティ権限が必要です",
-    "permissionsDescription": "Handyが文字起こしテキストを入力するには、アクセシビリティ権限が必要です。",
+    "permissionsDescription": "Plaudyが文字起こしテキストを入力するには、アクセシビリティ権限が必要です。",
     "openSettings": "システム設定を開く",
     "dismiss": "閉じる"
   },
@@ -603,7 +641,7 @@
   },
   "appLanguage": {
     "title": "アプリケーション言語",
-    "description": "Handyインターフェースの言語を変更"
+    "description": "Plaudyインターフェースの言語を変更"
   },
   "overlay": {
     "transcribing": "文字起こし中...",

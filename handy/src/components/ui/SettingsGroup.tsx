@@ -23,7 +23,9 @@ export const SettingsGroup: React.FC<SettingsGroupProps> = ({
           )}
         </div>
       )}
-      <div className="bg-background border border-mid-gray/20 rounded-lg overflow-visible">
+      {/* Liquid glass: every settings card shares the same translucent material as
+          Sessions/History, so the whole app speaks one visual language. */}
+      <div className="glass-panel overflow-visible">
         <div className="divide-y divide-mid-gray/20">{children}</div>
       </div>
     </div>

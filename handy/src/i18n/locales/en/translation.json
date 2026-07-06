@@ -103,7 +103,7 @@
     },
     "permissions": {
       "title": "Permissions Required",
-      "description": "Handy needs a couple of permissions to work properly.",
+      "description": "Plaudy needs a couple of permissions to work properly.",
       "microphone": {
         "title": "Microphone Access",
         "description": "Required to hear your voice for transcription."
@@ -161,7 +161,7 @@
     "general": {
       "title": "General",
       "shortcut": {
-        "title": "Handy Shortcuts",
+        "title": "Plaudy Shortcuts",
         "description": "Configure keyboard shortcuts to trigger speech-to-text recording",
         "loading": "Loading shortcuts...",
         "none": "No shortcuts configured",
@@ -279,11 +279,11 @@
       },
       "autostart": {
         "label": "Launch on Startup",
-        "description": "Automatically start Handy when you log in to your computer."
+        "description": "Automatically start Plaudy when you log in to your computer."
       },
       "showTrayIcon": {
         "label": "Show Tray Icon",
-        "description": "Display the Handy icon in the system tray."
+        "description": "Display the Plaudy icon in the system tray."
       },
       "overlay": {
         "title": "Overlay Position",
@@ -437,7 +437,11 @@
       "capturingMeeting": "Capturing you + system audio",
       "capturingMic": "Capturing microphone",
       "capturingSystem": "Capturing system audio",
-      "privacyNote": "Records your microphone and this Mac's audio as two streams, separated by speaker. Nothing ever leaves your Mac."
+      "privacyNote": "Records your microphone and this Mac's audio as two streams, separated by speaker. Nothing ever leaves your Mac.",
+      "autoCapture": {
+        "title": "Auto-capture",
+        "description": "Start a meeting session automatically when another app plays audio (a call, a video), and stop when it goes quiet. Experimental — everything stays on this Mac."
+      }
     },
     "history": {
       "title": "History",
@@ -479,7 +483,7 @@
       },
       "updateChecks": {
         "label": "Check for Updates",
-        "description": "Automatically check for new versions of Handy"
+        "description": "Automatically check for new versions of Plaudy"
       },
       "soundTheme": {
         "label": "Sound Theme",
@@ -547,28 +551,23 @@
       "title": "About",
       "version": {
         "title": "Version",
-        "description": "Current version of Handy"
+        "description": "Current version of Plaudy"
       },
       "appDataDirectory": {
         "title": "App Data Directory",
-        "description": "Location where Handy stores its data"
+        "description": "Location where Plaudy stores its data"
       },
       "sourceCode": {
         "title": "Source Code",
         "description": "View source code and contribute",
         "button": "View on GitHub"
       },
-      "supportDevelopment": {
-        "title": "Support Development",
-        "description": "Help us continue building Handy",
-        "button": "Donate"
-      },
       "acknowledgments": {
         "title": "Acknowledgments",
         "whisper": {
           "title": "Whisper.cpp",
           "description": "High-performance inference of OpenAI's Whisper automatic speech recognition model",
-          "details": "Handy uses Whisper.cpp for fast, local speech-to-text processing. Thanks to the amazing work by Georgi Gerganov and contributors."
+          "details": "Plaudy uses Whisper.cpp for fast, local speech-to-text processing. Thanks to the amazing work by Georgi Gerganov and contributors."
         }
       }
     }
@@ -610,11 +609,16 @@
     "off": "Off",
     "yes": "Yes",
     "no": "No",
-    "noOptionsFound": "No options found"
+    "noOptionsFound": "No options found",
+    "copy": "Copy",
+    "copyToClipboard": "Copy to clipboard",
+    "notAvailable": "Not available",
+    "selectOption": "Select an option...",
+    "previewSoundTheme": "Preview sound theme (plays start then stop)"
   },
   "accessibility": {
     "permissionsRequired": "Accessibility Permissions Required",
-    "permissionsDescription": "Handy needs accessibility permissions to type transcribed text.",
+    "permissionsDescription": "Plaudy needs accessibility permissions to type transcribed text.",
     "openSettings": "Open System Settings",
     "dismiss": "Dismiss"
   },
@@ -637,7 +641,7 @@
   },
   "appLanguage": {
     "title": "Application Language",
-    "description": "Change the language of the Handy interface"
+    "description": "Change the language of the Plaudy interface"
   },
   "overlay": {
     "transcribing": "Transcribing...",

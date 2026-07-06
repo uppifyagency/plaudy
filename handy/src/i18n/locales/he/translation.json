@@ -6,7 +6,9 @@
     "unloadModel": "פרוק מודל",
     "model": "מודל",
     "quit": "יציאה",
-    "cancel": "ביטול"
+    "cancel": "ביטול",
+    "startRecording": "התחל הקלטה",
+    "stopRecording": "עצור הקלטה"
   },
   "sidebar": {
     "general": "כללי",
@@ -15,7 +17,8 @@
     "postProcessing": "עיבוד משלים",
     "history": "היסטוריה",
     "debug": "ניפוי שגיאות",
-    "about": "אודות"
+    "about": "אודות",
+    "sessions": "סשנים"
   },
   "onboarding": {
     "subtitle": "כדי להתחיל, בחר מודל תמלול",
@@ -100,7 +103,7 @@
     },
     "permissions": {
       "title": "נדרשות הרשאות",
-      "description": "Handy צריך כמה הרשאות כדי לעבוד כמו שצריך.",
+      "description": "Plaudy צריך כמה הרשאות כדי לעבוד כמו שצריך.",
       "microphone": {
         "title": "גישה למיקרופון",
         "description": "נדרש כדי לשמוע את הקול שלך לצורך תמלול."
@@ -158,7 +161,7 @@
     "general": {
       "title": "כללי",
       "shortcut": {
-        "title": "קיצורי מקשים של Handy",
+        "title": "קיצורי מקשים של Plaudy",
         "description": "הגדר קיצורי מקשים כדי להפעיל הקלטה ותמלול דיבור",
         "loading": "טוען קיצורי מקשים...",
         "none": "לא הוגדרו קיצורי מקשים",
@@ -276,11 +279,11 @@
       },
       "autostart": {
         "label": "הפעל עם עליית המערכת",
-        "description": "הפעל את Handy אוטומטית כשאתה מתחבר למחשב."
+        "description": "הפעל את Plaudy אוטומטית כשאתה מתחבר למחשב."
       },
       "showTrayIcon": {
         "label": "הצג אייקון במגש",
-        "description": "הצג את האייקון של Handy במגש המערכת."
+        "description": "הצג את האייקון של Plaudy במגש המערכת."
       },
       "overlay": {
         "title": "מיקום שכבת המשוב",
@@ -431,7 +434,20 @@
       "retranscribe": "תמלל מחדש",
       "retranscribeError": "תמלול מחדש נכשל. נסה שוב.",
       "transcribing": "מתמלל...",
-      "transcriptionFailed": "התמלול נכשל. אפשר לתמלל מחדש באמצעות אייקון הניסיון החוזר."
+      "transcriptionFailed": "התמלול נכשל. אפשר לתמלל מחדש באמצעות אייקון הניסיון החוזר.",
+      "noSpeech": "לא זוהה דיבור",
+      "unknownSpeaker": "לא ידוע",
+      "expand": "הצג פרטים",
+      "collapse": "הסתר פרטים",
+      "sourceMeeting": "פגישה",
+      "sourceMic": "מיקרופון",
+      "sourceSystem": "שמע מערכת",
+      "sourceDictation": "הכתבה",
+      "searchPlaceholder": "חיפוש הקלטות",
+      "noResults": "אין הקלטות התואמות לחיפוש",
+      "selectEntry": "בחרו הקלטה כדי לראות את התמליל",
+      "today": "היום",
+      "yesterday": "אתמול"
     },
     "debug": {
       "title": "ניפוי שגיאות",
@@ -445,7 +461,7 @@
       },
       "updateChecks": {
         "label": "בדוק עדכונים",
-        "description": "בדוק אוטומטית אם קיימות גרסאות חדשות של Handy"
+        "description": "בדוק אוטומטית אם קיימות גרסאות חדשות של Plaudy"
       },
       "soundTheme": {
         "label": "ערכת צלילים",
@@ -513,29 +529,46 @@
       "title": "אודות",
       "version": {
         "title": "גרסה",
-        "description": "הגרסה הנוכחית של Handy"
+        "description": "הגרסה הנוכחית של Plaudy"
       },
       "appDataDirectory": {
         "title": "תיקיית נתוני אפליקציה",
-        "description": "המיקום שבו Handy שומר את הנתונים שלו"
+        "description": "המיקום שבו Plaudy שומר את הנתונים שלו"
       },
       "sourceCode": {
         "title": "קוד מקור",
         "description": "צפה בקוד המקור ותרום",
         "button": "צפה ב-GitHub"
       },
-      "supportDevelopment": {
-        "title": "תמיכה בפיתוח",
-        "description": "עזור לנו להמשיך לבנות את Handy",
-        "button": "תרומה"
-      },
       "acknowledgments": {
         "title": "תודות",
         "whisper": {
           "title": "Whisper.cpp",
           "description": "הסקה מהירה לביצועים גבוהים עבור מודל זיהוי הדיבור Whisper של OpenAI",
-          "details": "Handy משתמש ב-Whisper.cpp לתמלול מהיר ומקומי. תודה לעבודה המדהימה של Georgi Gerganov וכל התורמים."
+          "details": "Plaudy משתמש ב-Whisper.cpp לתמלול מהיר ומקומי. תודה לעבודה המדהימה של Georgi Gerganov וכל התורמים."
         }
+      }
+    },
+    "sessions": {
+      "title": "מיקרופון + שמע מערכת, תמלול על המכשיר",
+      "description": "הקליטו הקלטה ארוכה מהמיקרופון או משמע המערכת של ה-Mac הזה. בעצירה היא מתומללת ונוספת להיסטוריה.",
+      "sourceLabel": "מקור",
+      "sourceMic": "מיקרופון",
+      "sourceSystem": "שמע מערכת",
+      "start": "התחל הקלטה",
+      "stop": "עצור הקלטה",
+      "recording": "מקליט…",
+      "modeMeeting": "פגישה",
+      "modeMic": "מיקרופון",
+      "modeSystem": "שמע מערכת",
+      "tapToStart": "הקש כדי להקליט",
+      "capturingMeeting": "מקליט אותך + שמע מערכת",
+      "capturingMic": "מקליט מיקרופון",
+      "capturingSystem": "מקליט שמע מערכת",
+      "privacyNote": "מקליט את המיקרופון ואת השמע של ה-Mac הזה כשני ערוצים, מופרדים לפי דובר. שום דבר לא עוזב את ה-Mac שלך.",
+      "autoCapture": {
+        "title": "הקלטה אוטומטית",
+        "description": "מתחיל אוטומטית סשן פגישה כשאפליקציה אחרת משמיעה שמע (שיחה, סרטון), ועוצר כשנהיה שקט. ניסיוני — הכול נשאר על ה-Mac הזה."
       }
     }
   },
@@ -576,11 +609,16 @@
     "off": "כבוי",
     "yes": "כן",
     "no": "לא",
-    "noOptionsFound": "לא נמצאו אפשרויות"
+    "noOptionsFound": "לא נמצאו אפשרויות",
+    "copy": "העתק",
+    "copyToClipboard": "העתק ללוח",
+    "notAvailable": "לא זמין",
+    "selectOption": "בחרו אפשרות...",
+    "previewSoundTheme": "האזנה מקדימה לערכת הצלילים (משמיע התחלה ואז עצירה)"
   },
   "accessibility": {
     "permissionsRequired": "נדרשות הרשאות נגישות",
-    "permissionsDescription": "Handy צריך הרשאות נגישות כדי להקליד את הטקסט המתומלל.",
+    "permissionsDescription": "Plaudy צריך הרשאות נגישות כדי להקליד את הטקסט המתומלל.",
     "openSettings": "פתח את הגדרות המערכת",
     "dismiss": "סגור"
   },
@@ -603,7 +641,7 @@
   },
   "appLanguage": {
     "title": "שפת האפליקציה",
-    "description": "שנה את שפת הממשק של Handy"
+    "description": "שנה את שפת הממשק של Plaudy"
   },
   "overlay": {
     "transcribing": "מתמלל...",

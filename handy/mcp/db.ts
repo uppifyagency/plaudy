@@ -5,16 +5,30 @@ import { homedir } from "os";
 import { join } from "path";
 
 /** Default location of the app's SQLite DB; override with PLAUDE_DB for tests / portability. */
+// Must match `identifier` in src-tauri/tauri.conf.json — no shared constant, keep in sync by hand.
 export function defaultDbPath(): string {
   return (
     process.env.PLAUDE_DB ??
-    join(homedir(), "Library", "Application Support", "com.pais.handy", "history.db")
+    join(
+      homedir(),
+      "Library",
+      "Application Support",
+      "com.uppify.plaudy",
+      "history.db",
+    )
   );
 }
 
-/** Open the DB read-only — this process never writes, so it can never corrupt a recording. */
+/**
+ * Open the DB with writes disabled — this process never writes, so it can never corrupt a recording.
+ * Not `readonly: true`: the app keeps history.db in WAL mode, and a readonly connection cannot
+ * create the -shm/-wal sidecars, so it fails with SQLITE_CANTOPEN whenever the app is closed.
+ * A read-write handle can; `query_only` then makes SQLite itself reject every write.
+ */
 export function openDb(path: string): Database {
-  return new Database(path, { readonly: true });
+  const db = new Database(path, { readwrite: true }); // no `create`: a missing DB must still throw
+  db.exec("PRAGMA query_only = ON;");
+  return db;
 }
 
 const SNIPPET_LEN = 160;
@@ -36,7 +50,9 @@ function matchSnippet(text: string, query: string): string {
   if (i < 0) return headSnippet(t);
   const start = Math.max(0, i - CONTEXT);
   const end = Math.min(t.length, i + query.length + CONTEXT);
-  return (start > 0 ? "…" : "") + t.slice(start, end) + (end < t.length ? "…" : "");
+  return (
+    (start > 0 ? "…" : "") + t.slice(start, end) + (end < t.length ? "…" : "")
+  );
 }
 
 function speakerLabels(db: Database, historyId: number): string[] {
@@ -55,7 +71,11 @@ export interface SessionSummary {
   speakers: string[];
 }
 
-export function listSessions(db: Database, limit = 20, offset = 0): SessionSummary[] {
+export function listSessions(
+  db: Database,
+  limit = 20,
+  offset = 0,
+): SessionSummary[] {
   const rows = db
     .query(
       `SELECT id, title, timestamp, status, transcription_text
@@ -123,7 +143,11 @@ export interface SearchHit {
 }
 
 /** Find sessions whose flat transcript OR any speaker segment contains `query` (case-insensitive). */
-export function searchSessions(db: Database, query: string, limit = 20): SearchHit[] {
+export function searchSessions(
+  db: Database,
+  query: string,
+  limit = 20,
+): SearchHit[] {
   // Escape LIKE metacharacters so "100%" or "snake_case" mean the literal text, not wildcards.
   const like = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
   const rows = db

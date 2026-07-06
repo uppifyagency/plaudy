@@ -40,7 +40,7 @@ use std::sync::Arc;
 use tauri::image::Image;
 pub use transcription_coordinator::TranscriptionCoordinator;
 
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Listener, Manager};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
@@ -243,6 +243,24 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     #[cfg(unix)]
     signal_handle::setup_signal_handler(app_handle.clone(), signals);
 
+    // The "graffetta" action, shared by the tray icon's left-click and the tray menu item:
+    // one gesture captures both sides of a conversation — the mic and the Mac's system audio
+    // as two streams that finalize into one speaker-attributed transcript. System audio is
+    // best-effort (recorded only when available), so this stays seamless when nothing is
+    // playing. Runs off the calling thread — start opens audio devices and stop joins
+    // writers + spawns finalize, neither of which should block the UI. The tray icon
+    // refreshes via the SessionStateChanged listener, so callers stay thin triggers.
+    fn spawn_session_toggle(app: &AppHandle) {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let sources = [Source::Mic, Source::SystemAudio];
+            match app.state::<Arc<SessionManager>>().toggle_sources(&sources) {
+                Ok(active) => log::info!("Session toggled via tray; active = {active}"),
+                Err(e) => log::error!("Failed to toggle session via tray: {e}"),
+            }
+        });
+    }
+
     // Apply macOS Accessory policy if starting hidden and tray is available.
     // If the tray icon is disabled, keep the dock icon so the user can reopen.
     #[cfg(target_os = "macos")]
@@ -269,7 +287,22 @@ fn initialize_core_logic(app_handle: &AppHandle) {
             .unwrap(),
         )
         .tooltip(tray::tray_tooltip())
-        .show_menu_on_left_click(true)
+        // The graffetta is a button, not a drawer: left-click toggles the meeting session
+        // directly; the menu lives on right-click. Linux tray backends don't deliver click
+        // events, so there the menu keeps owning the left-click.
+        .show_menu_on_left_click(cfg!(target_os = "linux"))
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button,
+                button_state,
+                ..
+            } = event
+            {
+                if tray::is_session_toggle_click(&button, &button_state) {
+                    spawn_session_toggle(tray.app_handle());
+                }
+            }
+        })
         .icon_as_template(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "settings" => {
@@ -286,21 +319,9 @@ fn initialize_core_logic(app_handle: &AppHandle) {
                 tray::copy_last_transcript(app);
             }
             "toggle_session" => {
-                // The menu-bar "graffetta": one click captures both sides of a conversation —
-                // the mic and the Mac's system audio as two streams that finalize into one
-                // speaker-attributed transcript. System audio is best-effort (recorded only when
-                // available), so this stays seamless when nothing is playing. Run off the menu
-                // thread — start opens audio devices and stop joins writers + spawns finalize,
-                // neither of which should block the UI. The tray icon refreshes via the
-                // SessionStateChanged listener, so this arm stays a thin trigger.
-                let app2 = app.clone();
-                std::thread::spawn(move || {
-                    let sources = [Source::Mic, Source::SystemAudio];
-                    match app2.state::<Arc<SessionManager>>().toggle_sources(&sources) {
-                        Ok(active) => log::info!("Session toggled via tray; active = {active}"),
-                        Err(e) => log::error!("Failed to toggle session via tray: {e}"),
-                    }
-                });
+                // Same graffetta action as the icon's left-click (menu path kept for Linux
+                // and for discoverability).
+                spawn_session_toggle(app);
             }
             "unload_model" => {
                 let transcription_manager = app.state::<Arc<TranscriptionManager>>();
@@ -579,11 +600,11 @@ pub fn run(cli_args: CliArgs) {
                     Target::new(if let Some(data_dir) = portable::data_dir() {
                         TargetKind::Folder {
                             path: data_dir.join("logs"),
-                            file_name: Some("handy".into()),
+                            file_name: Some("plaudy".into()),
                         }
                     } else {
                         TargetKind::LogDir {
-                            file_name: Some("handy".into()),
+                            file_name: Some("plaudy".into()),
                         }
                     })
                     .filter(|metadata| {
@@ -650,7 +671,7 @@ pub fn run(cli_args: CliArgs) {
             // for portable mode (redirects WebView2 cache to portable Data dir)
             let mut win_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("/".into()))
-                    .title("Handy")
+                    .title("Plaudy")
                     .inner_size(1000.0, 640.0)
                     .min_inner_size(780.0, 560.0)
                     .resizable(true)

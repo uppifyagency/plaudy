@@ -6,7 +6,9 @@
     "unloadModel": "Modeli boşalt",
     "model": "Model",
     "quit": "Çıkış",
-    "cancel": "İptal"
+    "cancel": "İptal",
+    "startRecording": "Kaydı Başlat",
+    "stopRecording": "Kaydı Durdur"
   },
   "sidebar": {
     "general": "Genel",
@@ -15,7 +17,8 @@
     "postProcessing": "Son İşlem",
     "history": "Geçmiş",
     "debug": "Hata Ayıklama",
-    "about": "Hakkında"
+    "about": "Hakkında",
+    "sessions": "Oturumlar"
   },
   "onboarding": {
     "subtitle": "Başlamak için bir transkripsiyon modeli seçin",
@@ -100,7 +103,7 @@
     },
     "permissions": {
       "title": "İzinler Gerekli",
-      "description": "Handy'nin düzgün çalışabilmesi için birkaç izne ihtiyacı var.",
+      "description": "Plaudy'nin düzgün çalışabilmesi için birkaç izne ihtiyacı var.",
       "microphone": {
         "title": "Mikrofon Erişimi",
         "description": "Sesinizi transkripsiyon için alabilmek için gereklidir."
@@ -176,7 +179,7 @@
     "general": {
       "title": "Genel",
       "shortcut": {
-        "title": "Handy Kısayolları",
+        "title": "Plaudy Kısayolları",
         "description": "Sesle yazma kaydını başlatmak için klavye kısayollarını yapılandırın",
         "loading": "Kısayollar yükleniyor...",
         "none": "Kısayol yapılandırılmadı",
@@ -276,11 +279,11 @@
       },
       "autostart": {
         "label": "Başlangıçta Çalıştır",
-        "description": "Bilgisayara giriş yaptığınızda Handy otomatik olarak başlatılır."
+        "description": "Bilgisayara giriş yaptığınızda Plaudy otomatik olarak başlatılır."
       },
       "showTrayIcon": {
         "label": "Tepsi simgesini göster",
-        "description": "Handy simgesini sistem tepsisinde göster."
+        "description": "Plaudy simgesini sistem tepsisinde göster."
       },
       "overlay": {
         "title": "Overlay Konumu",
@@ -431,7 +434,20 @@
       "retranscribe": "Yeniden yazıya dök",
       "retranscribeError": "Yeniden yazıya dökme başarısız oldu. Lütfen tekrar deneyin.",
       "transcribing": "Yazıya döküyor...",
-      "transcriptionFailed": "Transkripsiyon başarısız oldu. Yeniden deneme simgesini kullanarak tekrar yazıya dökebilirsiniz."
+      "transcriptionFailed": "Transkripsiyon başarısız oldu. Yeniden deneme simgesini kullanarak tekrar yazıya dökebilirsiniz.",
+      "noSpeech": "Konuşma algılanmadı",
+      "unknownSpeaker": "Bilinmeyen",
+      "expand": "Ayrıntıları göster",
+      "collapse": "Ayrıntıları gizle",
+      "sourceMeeting": "Toplantı",
+      "sourceMic": "Mikrofon",
+      "sourceSystem": "Sistem sesi",
+      "sourceDictation": "Dikte",
+      "searchPlaceholder": "Kayıtlarda ara",
+      "noResults": "Aramanızla eşleşen kayıt yok",
+      "selectEntry": "Transkripti görmek için bir kayıt seçin",
+      "today": "Bugün",
+      "yesterday": "Dün"
     },
     "debug": {
       "title": "Hata Ayıklama",
@@ -445,7 +461,7 @@
       },
       "updateChecks": {
         "label": "Güncellemeleri Kontrol Et",
-        "description": "Handy için yeni sürümleri otomatik olarak kontrol eder"
+        "description": "Plaudy için yeni sürümleri otomatik olarak kontrol eder"
       },
       "soundTheme": {
         "label": "Ses Teması",
@@ -513,29 +529,46 @@
       "title": "Hakkında",
       "version": {
         "title": "Sürüm",
-        "description": "Handy'nin mevcut sürümü"
+        "description": "Plaudy'nin mevcut sürümü"
       },
       "appDataDirectory": {
         "title": "Uygulama Veri Dizini",
-        "description": "Handy'nin verilerini sakladığı konum"
+        "description": "Plaudy'nin verilerini sakladığı konum"
       },
       "sourceCode": {
         "title": "Kaynak Kodu",
         "description": "Kaynak kodunu görüntüle ve katkıda bulun",
         "button": "GitHub'da Görüntüle"
       },
-      "supportDevelopment": {
-        "title": "Geliştirmeyi Destekle",
-        "description": "Handy'yi geliştirmeye devam etmemize yardımcı olun",
-        "button": "Bağış Yap"
-      },
       "acknowledgments": {
         "title": "Teşekkürler",
         "whisper": {
           "title": "Whisper.cpp",
           "description": "OpenAI'nin Whisper otomatik konuşma tanıma modelinin yüksek performanslı çıkarımı",
-          "details": "Handy, hızlı ve yerel konuşmadan metne dönüştürme için Whisper.cpp kullanır. Georgi Gerganov ve katkıda bulunanların harika çalışmaları için teşekkür ederiz."
+          "details": "Plaudy, hızlı ve yerel konuşmadan metne dönüştürme için Whisper.cpp kullanır. Georgi Gerganov ve katkıda bulunanların harika çalışmaları için teşekkür ederiz."
         }
+      }
+    },
+    "sessions": {
+      "title": "Mikrofon + sistem sesi, cihaz üzerinde yazıya dökülür",
+      "description": "Mikrofonunuzdan veya bu Mac'in sistem sesinden uzun bir kayıt yapın. Durdurduğunuzda kayıt yazıya dökülür ve Geçmiş'e eklenir.",
+      "sourceLabel": "Kaynak",
+      "sourceMic": "Mikrofon",
+      "sourceSystem": "Sistem sesi",
+      "start": "Kaydı başlat",
+      "stop": "Kaydı durdur",
+      "recording": "Kaydediliyor…",
+      "modeMeeting": "Toplantı",
+      "modeMic": "Mikrofon",
+      "modeSystem": "Sistem sesi",
+      "tapToStart": "Kaydetmek için dokunun",
+      "capturingMeeting": "Siz + sistem sesi kaydediliyor",
+      "capturingMic": "Mikrofon kaydediliyor",
+      "capturingSystem": "Sistem sesi kaydediliyor",
+      "privacyNote": "Mikrofonunuzu ve bu Mac'in sesini konuşmacıya göre ayrılmış iki akış olarak kaydeder. Hiçbir şey Mac'inizden dışarı çıkmaz.",
+      "autoCapture": {
+        "title": "Otomatik kayıt",
+        "description": "Başka bir uygulama ses çaldığında (bir arama, bir video) otomatik olarak toplantı oturumu başlatır ve sessizlikte durdurur. Deneysel — her şey bu Mac'te kalır."
       }
     }
   },
@@ -576,11 +609,16 @@
     "off": "Kapalı",
     "yes": "Evet",
     "no": "Hayır",
-    "noOptionsFound": "Seçenek bulunamadı"
+    "noOptionsFound": "Seçenek bulunamadı",
+    "copy": "Kopyala",
+    "copyToClipboard": "Panoya kopyala",
+    "notAvailable": "Kullanılamıyor",
+    "selectOption": "Bir seçenek seçin...",
+    "previewSoundTheme": "Ses temasını önizle (önce başlangıç, sonra bitiş çalar)"
   },
   "accessibility": {
     "permissionsRequired": "Erişilebilirlik İzinleri Gerekli",
-    "permissionsDescription": "Handy, transkribe edilen metni yazabilmek için erişilebilirlik izinlerine ihtiyaç duyar.",
+    "permissionsDescription": "Plaudy, transkribe edilen metni yazabilmek için erişilebilirlik izinlerine ihtiyaç duyar.",
     "openSettings": "Sistem Ayarlarını Aç",
     "dismiss": "Yoksay"
   },
@@ -603,7 +641,7 @@
   },
   "appLanguage": {
     "title": "Uygulama Dili",
-    "description": "Handy arayüzünün dilini değiştirin"
+    "description": "Plaudy arayüzünün dilini değiştirin"
   },
   "overlay": {
     "transcribing": "Transkribe ediliyor...",

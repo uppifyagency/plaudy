@@ -221,20 +221,20 @@ CREATE INDEX idx_segments_history ON transcription_segments(history_id);
 
 **Dir:** [handy/mcp/](../handy/mcp/) — a dependency‑free **Bun + `bun:sqlite`** server speaking **newline‑delimited JSON‑RPC 2.0 over stdio**, registered for Claude Code in repo‑root [.mcp.json](../.mcp.json).
 
-- **Read‑only** (`new Database(path, { readonly: true })`) over `history.db` — it can never alter a recording — and **stdio only, no network listener**, so the "nothing leaves the Mac" promise holds.
+- **Writes disabled** (read‑write open + `PRAGMA query_only = ON`) over `history.db` — SQLite itself rejects every write, so it can never alter a recording — and **stdio only, no network listener**, so the "nothing leaves the Mac" promise holds. Not `readonly: true`: the app keeps the DB in **WAL** mode and a readonly connection cannot create the `-shm`/`-wal` sidecars, so it fails with `SQLITE_CANTOPEN` whenever the app is closed (regression‑tested in `db.test.ts`).
 - Tools ([db.ts](../handy/mcp/db.ts) query layer, [server.ts](../handy/mcp/server.ts) protocol):
   - **`list_sessions`** — recent sessions (id, title, timestamp, status, snippet, speaker labels).
   - **`get_session`** — one session's full transcript + speaker‑attributed segments.
   - **`search_sessions`** — case‑insensitive search across transcripts **and** segments, snippet centered on the hit.
-- DB path defaults to `~/Library/Application Support/com.pais.handy/history.db`; `PLAUDE_DB` overrides it (used by tests).
-- **Security:** every query is parameterized (no SQL injection); table/column names are static; tool args only become bound params or integer limits. Verified by `bun test` (4 tests) and a piped JSON‑RPC smoke test, and run **live against the real `history.db`**.
+- DB path defaults to `~/Library/Application Support/com.uppify.plaudy/history.db`; `PLAUDE_DB` overrides it (used by tests).
+- **Security:** every query is parameterized (no SQL injection); table/column names are static; tool args only become bound params or integer limits. Verified by `bun test` (14 tests) and a piped JSON‑RPC smoke test, and run **live against the real `history.db`**.
 - The hand‑rolled protocol (vs the SDK) is a deliberate dep‑avoidance choice; `@modelcontextprotocol/sdk` is the named upgrade path. Claude Desktop registration is in [handy/mcp/README.md](../handy/mcp/README.md).
 
 ---
 
 ## 9. Frontend
 
-- **Sessions panel** ([settings/sessions/SessionsSettings.tsx](../handy/src/components/settings/sessions/SessionsSettings.tsx)) — a focused **hero capture experience**: one large record button (idle → mic glyph; recording → stop square inside a pulsing ring), a **Meeting / Microphone / System** segmented mode control (Meeting default → `commands.startMeeting()`; the others → `startSession(source)`), a live **elapsed timer**, and a calm privacy promise. `active` is driven by the `sessionStateChanged` event, so it's correct however a session is toggled. Registered as the `sessions` sidebar section in [Sidebar.tsx](../handy/src/components/Sidebar.tsx) (`SECTIONS_CONFIG`).
+- **Sessions panel** ([settings/sessions/SessionsSettings.tsx](../handy/src/components/settings/sessions/SessionsSettings.tsx)) — a focused **hero capture experience**: one large record button (idle → ink‑on‑paper mic glyph; recording → red stop square inside a pulsing ring — red is reserved for recording/danger, so the color flip itself is the signal; same rule in `ui/Button.tsx`: `primary` = ink‑on‑paper, `danger` = red), a **Meeting / Microphone / System** segmented mode control (Meeting default → `commands.startMeeting()`; the others → `startSession(source)`), a live **elapsed timer**, and a calm privacy promise. `active` is driven by the `sessionStateChanged` event, so it's correct however a session is toggled. Registered as the `sessions` sidebar section in [Sidebar.tsx](../handy/src/components/Sidebar.tsx) (`SECTIONS_CONFIG`).
 - **History view** ([settings/history/HistorySettings.tsx](../handy/src/components/settings/history/HistorySettings.tsx)) — `SpeakerTimeline` (speaker · time · text per segment) plus **speaker chips** (distinct labels at a glance), infinite scroll, optimistic delete + retry. The transcript area is status‑driven: `transcribing` → a "Transcribing…" pulse; `failed` → the retry hint; otherwise the text, or **"No speech detected"** for an empty `done` row.
 - i18n keys added under `settings.sessions.*` (modeMeeting/Mic/System, tapToStart, capturing*, privacyNote, …), `settings.history.noSpeech`, and `tray.startRecording/stopRecording`. i18n is build‑blocking (ESLint).
 
@@ -314,7 +314,7 @@ Build specifics: **`HANDY_FORCE_AI_STUB=1`** forces the Apple Intelligence stub 
 
 **Live‑verification recipes** are in [HANDOFF.md §7](HANDOFF.md) (dual `--toggle-meeting` capture; the MCP `list_sessions` JSON‑RPC). The dual‑stream meeting capture was **validated live with real speech** (mic "Me" + system "Speaker 1", merged) on 2026‑06‑23.
 
-App data: `~/Library/Application Support/com.pais.handy/` (`history.db`, `recordings/`); log: `~/Library/Logs/com.pais.handy/handy.log`.
+App data: `~/Library/Application Support/com.uppify.plaudy/` (`history.db`, `recordings/`); log: `~/Library/Logs/com.uppify.plaudy/handy.log`.
 
 ---
 

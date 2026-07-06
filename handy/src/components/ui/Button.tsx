@@ -22,8 +22,9 @@ export const Button: React.FC<ButtonProps> = ({
     "font-medium rounded-lg border focus:outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer";
 
   const variantClasses = {
+    // Ink-on-paper, not brand red: red is reserved for recording state and `danger`.
     primary:
-      "text-white bg-background-ui border-background-ui hover:bg-background-ui/80 hover:border-background-ui/80 focus:ring-1 focus:ring-background-ui",
+      "text-background bg-text border-text hover:bg-text/85 hover:border-text/85 focus:ring-1 focus:ring-text/40",
     "primary-soft":
       "text-text bg-logo-primary/20 border-transparent hover:bg-logo-primary/30 focus:ring-1 focus:ring-logo-primary",
     secondary:

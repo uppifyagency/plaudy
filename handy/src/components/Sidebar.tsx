@@ -1,8 +1,16 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { Cog, FlaskConical, History, Info, Sparkles, Cpu, Mic } from "lucide-react";
-import HandyTextLogo from "./icons/HandyTextLogo";
-import HandyHand from "./icons/HandyHand";
+import {
+  Cog,
+  Ear,
+  FlaskConical,
+  History,
+  Info,
+  Sparkles,
+  Cpu,
+  Mic,
+} from "lucide-react";
+import PlaudyTextLogo from "./icons/PlaudyTextLogo";
 import { useSettings } from "../hooks/useSettings";
 import {
   GeneralSettings,
@@ -35,7 +43,7 @@ interface SectionConfig {
 export const SECTIONS_CONFIG = {
   general: {
     labelKey: "sidebar.general",
-    icon: HandyHand,
+    icon: Ear,
     component: GeneralSettings,
     enabled: () => true,
   },
@@ -101,7 +109,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <div className="flex flex-col w-44 h-full items-center px-3 pt-9 border-e border-mid-gray/10">
-      <HandyTextLogo width={112} className="mx-4 mb-3 mt-1" />
+      <PlaudyTextLogo width={112} className="mx-4 mb-3 mt-1" />
       <div className="flex flex-col w-full items-center gap-1 pt-3 border-t border-mid-gray/10">
         {availableSections.map((section) => {
           const Icon = section.icon;

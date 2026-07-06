@@ -4,6 +4,8 @@ import { toast } from "sonner";
 import { Mic, Square, Users, AudioLines } from "lucide-react";
 import { commands, events } from "@/bindings";
 import { formatClock } from "@/utils/formatClock";
+import { useSettings } from "../../../hooks/useSettings";
+import { ToggleSwitch } from "../../ui/ToggleSwitch";
 
 /**
  * Sessions — the "graffetta" capture experience. One tap records a meeting (your mic + this
@@ -32,6 +34,7 @@ const LIVE_LABEL_KEY: Record<Mode, string> = {
 
 export function SessionsSettings() {
   const { t } = useTranslation();
+  const { getSetting, updateSetting, isUpdating } = useSettings();
   const [active, setActive] = useState(false);
   const [mode, setMode] = useState<Mode>("meeting");
   // What the running session actually captures, for the live label. Driven by the
@@ -124,11 +127,13 @@ export function SessionsSettings() {
             type="button"
             onClick={toggle}
             disabled={busy}
-            aria-label={t(active ? "settings.sessions.stop" : "settings.sessions.start")}
-            className={`relative grid h-28 w-28 place-items-center rounded-full text-white shadow-lg transition-all duration-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/40 disabled:opacity-60 ${
+            aria-label={t(
+              active ? "settings.sessions.stop" : "settings.sessions.start",
+            )}
+            className={`relative grid h-28 w-28 place-items-center rounded-full shadow-lg transition-all duration-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/40 disabled:opacity-60 ${
               active
-                ? "bg-red-500 hover:bg-red-600 scale-100"
-                : "bg-accent hover:scale-105 hover:shadow-xl"
+                ? "bg-red-500 text-white hover:bg-red-600 scale-100"
+                : "bg-text text-background hover:scale-105 hover:shadow-xl"
             }`}
           >
             {active ? (
@@ -152,7 +157,9 @@ export function SessionsSettings() {
               >
                 <span
                   className="inline-block h-2 w-2 rounded-full bg-red-500"
-                  style={{ animation: "session-rec-pulse 1.5s ease-in-out infinite" }}
+                  style={{
+                    animation: "session-rec-pulse 1.5s ease-in-out infinite",
+                  }}
                 />
                 {t(LIVE_LABEL_KEY[liveMode])}
               </span>
@@ -195,6 +202,20 @@ export function SessionsSettings() {
         <p className="max-w-sm text-center text-xs leading-relaxed text-text/50">
           {t("settings.sessions.privacyNote")}
         </p>
+
+        {/* Seamless auto-capture — the supervisor reads this flag live, no restart needed */}
+        <div className="glass-panel w-full max-w-md px-4 py-1">
+          <ToggleSwitch
+            checked={getSetting("auto_capture_enabled") ?? false}
+            onChange={(enabled) =>
+              updateSetting("auto_capture_enabled", enabled)
+            }
+            isUpdating={isUpdating("auto_capture_enabled")}
+            label={t("settings.sessions.autoCapture.title")}
+            description={t("settings.sessions.autoCapture.description")}
+            grouped={true}
+          />
+        </div>
       </div>
 
       <style>{`

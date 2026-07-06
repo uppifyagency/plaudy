@@ -7,10 +7,10 @@ and it speaks only over stdio (no network listener). Nothing leaves your machine
 
 ## Tools
 
-| Tool | What it does |
-| --- | --- |
-| `list_sessions` | Recent sessions (id, title, time, status, snippet, speaker labels). |
-| `get_session` | One session's full transcript + speaker-attributed segments, by id. |
+| Tool              | What it does                                                                                                |
+| ----------------- | ----------------------------------------------------------------------------------------------------------- |
+| `list_sessions`   | Recent sessions (id, title, time, status, snippet, speaker labels).                                         |
+| `get_session`     | One session's full transcript + speaker-attributed segments, by id.                                         |
 | `search_sessions` | Case-insensitive search across every transcript and segment; returns matches with a snippet around the hit. |
 
 ## Use it
@@ -31,11 +31,11 @@ appears as the `plaude-local` server (approve it when prompted).
 }
 ```
 
-Then ask Claude things like *"summarize my last meeting"* or *"find where we talked about the budget."*
+Then ask Claude things like _"summarize my last meeting"_ or _"find where we talked about the budget."_
 
 ## Config & test
 
-- DB path defaults to `~/Library/Application Support/com.pais.handy/history.db`. Override with the
+- DB path defaults to `~/Library/Application Support/com.uppify.plaudy/history.db`. Override with the
   `PLAUDE_DB` env var (used by the tests).
 - `bun test` runs the query-layer tests against an in-memory DB.
 - Drive the protocol by hand: pipe newline-delimited JSON-RPC into `bun run server.ts` (see the

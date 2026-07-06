@@ -47,8 +47,17 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        limit: { type: "integer", minimum: 1, maximum: 100, description: "Max sessions (default 20)" },
-        offset: { type: "integer", minimum: 0, description: "Skip this many (paging, default 0)" },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Max sessions (default 20)",
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description: "Skip this many (paging, default 0)",
+        },
       },
     },
   },
@@ -58,7 +67,12 @@ const TOOLS = [
       "Get one session's full transcript and speaker-attributed segments by id. Use to summarize a session or quote exactly who said what.",
     inputSchema: {
       type: "object",
-      properties: { id: { type: "integer", description: "Session id from list_sessions/search_sessions" } },
+      properties: {
+        id: {
+          type: "integer",
+          description: "Session id from list_sessions/search_sessions",
+        },
+      },
       required: ["id"],
     },
   },
@@ -70,7 +84,12 @@ const TOOLS = [
       type: "object",
       properties: {
         query: { type: "string", description: "Text to look for" },
-        limit: { type: "integer", minimum: 1, maximum: 100, description: "Max results (default 20)" },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Max results (default 20)",
+        },
       },
       required: ["query"],
     },
@@ -81,7 +100,11 @@ function runTool(name: string, args: Record<string, unknown>): string {
   switch (name) {
     case "list_sessions":
       return JSON.stringify(
-        listSessions(getDb(), num(args.limit, 20, 1, 100), num(args.offset, 0, 0)),
+        listSessions(
+          getDb(),
+          num(args.limit, 20, 1, 100),
+          num(args.offset, 0, 0),
+        ),
         null,
         2,
       );
@@ -92,8 +115,14 @@ function runTool(name: string, args: Record<string, unknown>): string {
     case "search_sessions": {
       const query = String(args.query ?? "").trim();
       if (!query)
-        throw new Error("Search query is empty — give me a word or phrase to look for.");
-      return JSON.stringify(searchSessions(getDb(), query, num(args.limit, 20, 1, 100)), null, 2);
+        throw new Error(
+          "Search query is empty — give me a word or phrase to look for.",
+        );
+      return JSON.stringify(
+        searchSessions(getDb(), query, num(args.limit, 20, 1, 100)),
+        null,
+        2,
+      );
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
@@ -102,8 +131,14 @@ function runTool(name: string, args: Record<string, unknown>): string {
 
 /** Coerce a tool argument to a clamped integer — SQLite treats LIMIT -1 as unlimited, so
  *  raw passthrough is forbidden: limit lives in [1, 100], offset in [0, ∞). */
-function num(v: unknown, fallback: number, min: number, max = Infinity): number {
-  const n = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : fallback;
+function num(
+  v: unknown,
+  fallback: number,
+  min: number,
+  max = Infinity,
+): number {
+  const n =
+    typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : fallback;
   return Math.min(max, Math.max(min, n));
 }
 
@@ -147,19 +182,34 @@ function handle(req: JsonRpc): void {
           String(params?.name ?? ""),
           (params?.arguments as Record<string, unknown>) ?? {},
         );
-        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } });
+        send({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text }] },
+        });
         break;
       }
       default:
         if (isRequest)
-          send({ jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${method}` } });
+          send({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32601, message: `Method not found: ${method}` },
+          });
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (!isRequest) return;
     // A tool failure is a normal result with isError, not a protocol error (MCP convention).
     if (method === "tools/call") {
-      send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: ${message}` }], isError: true } });
+      send({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: `Error: ${message}` }],
+          isError: true,
+        },
+      });
     } else {
       send({ jsonrpc: "2.0", id, error: { code: -32603, message } });
     }

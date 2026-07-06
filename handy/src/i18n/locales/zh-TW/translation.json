@@ -6,7 +6,9 @@
     "unloadModel": "卸載模型",
     "model": "模型",
     "quit": "結束",
-    "cancel": "取消"
+    "cancel": "取消",
+    "startRecording": "開始錄音",
+    "stopRecording": "停止錄音"
   },
   "sidebar": {
     "general": "一般",
@@ -15,7 +17,8 @@
     "postProcessing": "後處理",
     "history": "歷史紀錄",
     "debug": "偵錯",
-    "about": "關於"
+    "about": "關於",
+    "sessions": "工作階段"
   },
   "onboarding": {
     "subtitle": "首先，請選擇一種模型",
@@ -100,7 +103,7 @@
     },
     "permissions": {
       "title": "需要權限",
-      "description": "Handy 需要一些權限才能正常運作",
+      "description": "Plaudy 需要一些權限才能正常運作",
       "microphone": {
         "title": "麥克風存取",
         "description": "需要聽取您的語音進行轉錄"
@@ -158,7 +161,7 @@
     "general": {
       "title": "一般",
       "shortcut": {
-        "title": "Handy 快捷鍵",
+        "title": "Plaudy 快捷鍵",
         "description": "設定啟動語音轉文字錄製的鍵盤快捷鍵",
         "loading": "載入快捷鍵中...",
         "none": "未設定快捷鍵",
@@ -276,11 +279,11 @@
       },
       "autostart": {
         "label": "開機啟動",
-        "description": "登入電腦時自動啟動 Handy"
+        "description": "登入電腦時自動啟動 Plaudy"
       },
       "showTrayIcon": {
         "label": "顯示系統匣圖示",
-        "description": "在系統匣中顯示 Handy 圖示"
+        "description": "在系統匣中顯示 Plaudy 圖示"
       },
       "overlay": {
         "title": "懸浮窗位置",
@@ -431,7 +434,20 @@
       "retranscribe": "重新轉錄",
       "retranscribeError": "重新轉錄失敗，請重試。",
       "transcribing": "轉錄中...",
-      "transcriptionFailed": "轉錄失敗。您可以使用重試圖示重新轉錄。"
+      "transcriptionFailed": "轉錄失敗。您可以使用重試圖示重新轉錄。",
+      "noSpeech": "未偵測到語音",
+      "unknownSpeaker": "未知",
+      "expand": "顯示詳細資訊",
+      "collapse": "隱藏詳細資訊",
+      "sourceMeeting": "會議",
+      "sourceMic": "麥克風",
+      "sourceSystem": "系統音訊",
+      "sourceDictation": "聽寫",
+      "searchPlaceholder": "搜尋錄音",
+      "noResults": "沒有符合搜尋的錄音",
+      "selectEntry": "選擇一段錄音以查看其轉寫文字",
+      "today": "今天",
+      "yesterday": "昨天"
     },
     "debug": {
       "title": "偵錯",
@@ -445,7 +461,7 @@
       },
       "updateChecks": {
         "label": "檢查更新",
-        "description": "自動檢查 Handy 的新版本"
+        "description": "自動檢查 Plaudy 的新版本"
       },
       "soundTheme": {
         "label": "聲音主題",
@@ -513,29 +529,46 @@
       "title": "關於",
       "version": {
         "title": "版本",
-        "description": "Handy 的目前版本"
+        "description": "Plaudy 的目前版本"
       },
       "appDataDirectory": {
         "title": "應用程式資料目錄",
-        "description": "Handy 儲存資料的位置"
+        "description": "Plaudy 儲存資料的位置"
       },
       "sourceCode": {
         "title": "原始碼",
         "description": "檢視原始碼並參與貢獻",
         "button": "在 GitHub 上檢視"
       },
-      "supportDevelopment": {
-        "title": "支持開發",
-        "description": "幫助我們繼續開發 Handy",
-        "button": "捐贈"
-      },
       "acknowledgments": {
         "title": "致謝",
         "whisper": {
           "title": "Whisper.cpp",
           "description": "針對 OpenAI Whisper 自動語音識別模型的高效能推理引擎",
-          "details": "Handy 使用 Whisper.cpp 進行快速的本機語音轉文字處理。感謝 Georgi Gerganov 和貢獻者們的傑出工作"
+          "details": "Plaudy 使用 Whisper.cpp 進行快速的本機語音轉文字處理。感謝 Georgi Gerganov 和貢獻者們的傑出工作"
         }
+      }
+    },
+    "sessions": {
+      "title": "麥克風 + 系統音訊,在裝置上轉寫",
+      "description": "從麥克風或這台 Mac 的系統音訊錄製長錄音。停止後會自動轉寫並加入歷史記錄。",
+      "sourceLabel": "來源",
+      "sourceMic": "麥克風",
+      "sourceSystem": "系統音訊",
+      "start": "開始錄音",
+      "stop": "停止錄音",
+      "recording": "錄音中…",
+      "modeMeeting": "會議",
+      "modeMic": "麥克風",
+      "modeSystem": "系統音訊",
+      "tapToStart": "點一下開始錄音",
+      "capturingMeeting": "正在錄製:你 + 系統音訊",
+      "capturingMic": "正在錄製麥克風",
+      "capturingSystem": "正在錄製系統音訊",
+      "privacyNote": "將麥克風和這台 Mac 的音訊錄製為兩條依說話者分離的音訊流。任何資料都不會離開你的 Mac。",
+      "autoCapture": {
+        "title": "自動錄製",
+        "description": "當其他 App 播放音訊時(通話、影片)自動開始會議工作階段,安靜後自動停止。實驗性功能 — 一切都保留在這台 Mac 上。"
       }
     }
   },
@@ -576,11 +609,16 @@
     "off": "關",
     "yes": "是",
     "no": "否",
-    "noOptionsFound": "未找到選項"
+    "noOptionsFound": "未找到選項",
+    "copy": "拷貝",
+    "copyToClipboard": "拷貝到剪貼板",
+    "notAvailable": "無法使用",
+    "selectOption": "選擇一個選項...",
+    "previewSoundTheme": "試聽聲音主題(先播放開始音,再播放停止音)"
   },
   "accessibility": {
     "permissionsRequired": "需要輔助使用權限",
-    "permissionsDescription": "Handy 需要輔助使用權限才能輸入轉錄的文字",
+    "permissionsDescription": "Plaudy 需要輔助使用權限才能輸入轉錄的文字",
     "openSettings": "開啟系統設定",
     "dismiss": "關閉"
   },
@@ -603,7 +641,7 @@
   },
   "appLanguage": {
     "title": "應用程式語言",
-    "description": "變更 Handy 介面的語言"
+    "description": "變更 Plaudy 介面的語言"
   },
   "overlay": {
     "transcribing": "正在轉錄...",

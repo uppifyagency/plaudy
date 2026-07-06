@@ -6,7 +6,9 @@
     "unloadModel": "Avlasta modell",
     "model": "Modell",
     "quit": "Avsluta",
-    "cancel": "Avbryt"
+    "cancel": "Avbryt",
+    "startRecording": "Starta inspelning",
+    "stopRecording": "Stoppa inspelning"
   },
   "sidebar": {
     "general": "Allmänt",
@@ -15,7 +17,8 @@
     "postProcessing": "Efterbearbetning",
     "history": "Historik",
     "debug": "Felsökning",
-    "about": "Om"
+    "about": "Om",
+    "sessions": "Sessioner"
   },
   "onboarding": {
     "subtitle": "För att komma igång, välj en transkriptionsmodell",
@@ -100,7 +103,7 @@
     },
     "permissions": {
       "title": "Behörigheter krävs",
-      "description": "Handy behöver ett par behörigheter för att fungera korrekt.",
+      "description": "Plaudy behöver ett par behörigheter för att fungera korrekt.",
       "microphone": {
         "title": "Mikrofonåtkomst",
         "description": "Krävs för att höra din röst för transkription."
@@ -158,7 +161,7 @@
     "general": {
       "title": "Allmänt",
       "shortcut": {
-        "title": "Handy-kortkommandon",
+        "title": "Plaudy-kortkommandon",
         "description": "Konfigurera kortkommandon för att starta tal-till-text-inspelning",
         "loading": "Laddar kortkommandon...",
         "none": "Inga kortkommandon konfigurerade",
@@ -276,11 +279,11 @@
       },
       "autostart": {
         "label": "Starta vid uppstart",
-        "description": "Starta Handy automatiskt när du loggar in på din dator."
+        "description": "Starta Plaudy automatiskt när du loggar in på din dator."
       },
       "showTrayIcon": {
         "label": "Visa ikon i systemfältet",
-        "description": "Visa Handy-ikonen i systemfältet."
+        "description": "Visa Plaudy-ikonen i systemfältet."
       },
       "overlay": {
         "title": "Överlagringsposition",
@@ -431,7 +434,20 @@
       "retranscribe": "Transkribera igen",
       "retranscribeError": "Misslyckades med att transkribera igen. Försök igen.",
       "transcribing": "Transkriberar...",
-      "transcriptionFailed": "Transkribering misslyckades. Du kan transkribera igen med hjälp av ikonen för nytt försök."
+      "transcriptionFailed": "Transkribering misslyckades. Du kan transkribera igen med hjälp av ikonen för nytt försök.",
+      "noSpeech": "Inget tal upptäcktes",
+      "unknownSpeaker": "Okänd",
+      "expand": "Visa detaljer",
+      "collapse": "Dölj detaljer",
+      "sourceMeeting": "Möte",
+      "sourceMic": "Mikrofon",
+      "sourceSystem": "Systemljud",
+      "sourceDictation": "Diktering",
+      "searchPlaceholder": "Sök inspelningar",
+      "noResults": "Inga inspelningar matchar din sökning",
+      "selectEntry": "Välj en inspelning för att se dess transkription",
+      "today": "Idag",
+      "yesterday": "Igår"
     },
     "debug": {
       "title": "Felsökning",
@@ -445,7 +461,7 @@
       },
       "updateChecks": {
         "label": "Sök efter uppdateringar",
-        "description": "Sök automatiskt efter nya versioner av Handy"
+        "description": "Sök automatiskt efter nya versioner av Plaudy"
       },
       "soundTheme": {
         "label": "Ljudtema",
@@ -513,29 +529,46 @@
       "title": "Om",
       "version": {
         "title": "Version",
-        "description": "Nuvarande version av Handy"
+        "description": "Nuvarande version av Plaudy"
       },
       "appDataDirectory": {
         "title": "Mapp för appdata",
-        "description": "Plats där Handy lagrar sina data"
+        "description": "Plats där Plaudy lagrar sina data"
       },
       "sourceCode": {
         "title": "Källkod",
         "description": "Visa källkod och bidra",
         "button": "Visa på GitHub"
       },
-      "supportDevelopment": {
-        "title": "Stöd utvecklingen",
-        "description": "Hjälp oss att fortsätta bygga Handy",
-        "button": "Donera"
-      },
       "acknowledgments": {
         "title": "Tack till",
         "whisper": {
           "title": "Whisper.cpp",
           "description": "Högpresterande inferens av OpenAI:s Whisper-modell för automatisk taligenkänning",
-          "details": "Handy använder Whisper.cpp för snabb, lokal tal-till-text-behandling. Tack till det fantastiska arbete som utförts av Georgi Gerganov med medarbetare."
+          "details": "Plaudy använder Whisper.cpp för snabb, lokal tal-till-text-behandling. Tack till det fantastiska arbete som utförts av Georgi Gerganov med medarbetare."
         }
+      }
+    },
+    "sessions": {
+      "title": "Mikrofon + systemljud, transkriberat på enheten",
+      "description": "Spela in långa sessioner från din mikrofon eller den här Macens systemljud. När du stoppar transkriberas inspelningen och läggs till i Historik.",
+      "sourceLabel": "Källa",
+      "sourceMic": "Mikrofon",
+      "sourceSystem": "Systemljud",
+      "start": "Starta inspelning",
+      "stop": "Stoppa inspelning",
+      "recording": "Spelar in…",
+      "modeMeeting": "Möte",
+      "modeMic": "Mikrofon",
+      "modeSystem": "Systemljud",
+      "tapToStart": "Tryck för att spela in",
+      "capturingMeeting": "Spelar in dig + systemljud",
+      "capturingMic": "Spelar in mikrofon",
+      "capturingSystem": "Spelar in systemljud",
+      "privacyNote": "Spelar in din mikrofon och den här Macens ljud som två strömmar, separerade per talare. Inget lämnar någonsin din Mac.",
+      "autoCapture": {
+        "title": "Automatisk inspelning",
+        "description": "Startar automatiskt en mötessession när en annan app spelar upp ljud (ett samtal, en video) och stoppar när det blir tyst. Experimentellt — allt stannar på den här Macen."
       }
     }
   },
@@ -576,11 +609,16 @@
     "off": "Av",
     "yes": "Ja",
     "no": "Nej",
-    "noOptionsFound": "Inga alternativ hittades"
+    "noOptionsFound": "Inga alternativ hittades",
+    "copy": "Kopiera",
+    "copyToClipboard": "Kopiera till urklipp",
+    "notAvailable": "Inte tillgängligt",
+    "selectOption": "Välj ett alternativ...",
+    "previewSoundTheme": "Förhandslyssna på ljudtema (spelar start och sedan stopp)"
   },
   "accessibility": {
     "permissionsRequired": "Behörigheter för hjälpmedel krävs",
-    "permissionsDescription": "Handy behöver behörighet för hjälpmedel för att kunna skriva transkriberad text.",
+    "permissionsDescription": "Plaudy behöver behörighet för hjälpmedel för att kunna skriva transkriberad text.",
     "openSettings": "Öppna systeminställningar",
     "dismiss": "Avvisa"
   },
@@ -603,7 +641,7 @@
   },
   "appLanguage": {
     "title": "Applikationsspråk",
-    "description": "Ändra språket i Handy-gränssnittet"
+    "description": "Ändra språket i Plaudy-gränssnittet"
   },
   "overlay": {
     "transcribing": "Transkriberar...",

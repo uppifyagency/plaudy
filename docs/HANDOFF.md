@@ -10,7 +10,7 @@ _Snapshot: 2026‑07‑05. Branch `main`. Working tree NOT committed (commit onl
 
 **Mission:** Plaude Local = a **local‑first, offline, private** alternative to Plaud (AI voice recorder + "who said what") for macOS, built on the **Handy** fork (Tauri 2, Rust + React). Capture is **on‑device**; ASR + diarization run **locally** (ONNX); **nothing leaves the Mac**. Claude connects to your library through a **local MCP server**.
 
-**Posture today:** the product thesis is **built and proven live**. One click (menu‑bar "graffetta") records a meeting — your **mic** + the Mac's **system audio** as two streams — and it lands as **one speaker‑attributed transcript** that **Claude can summarize/search locally**. And since 2026‑07‑05 the click is optional: the **seamless auto‑capture trigger works** (per‑process CoreAudio sensor, own PID excluded — E2E‑validated live; still opt‑in, `auto_capture_enabled=false`, pending one real‑meeting validation). Green across the board: **102 Rust unit tests · 2 live‑acceptance tests · 4 MCP tests · `tsc` · ESLint**. A 36 MB optimized **release binary builds**.
+**Posture today:** the product thesis is **built and proven live**. One click (the menu‑bar ear 👂) records a meeting — your **mic** + the Mac's **system audio** as two streams — and it lands as **one speaker‑attributed transcript** that **Claude can summarize/search locally**. And since 2026‑07‑05 the click is optional: the **seamless auto‑capture trigger works** (per‑process CoreAudio sensor, own PID excluded — E2E‑validated live; still opt‑in, `auto_capture_enabled=false`, pending one real‑meeting validation). Green across the board: **102 Rust unit tests · 2 live‑acceptance tests · 4 MCP tests · `tsc` · ESLint**. A 36 MB optimized **release binary builds**. **2026‑07‑06:** adversarial‑review closure — MCP reads the right DB again (bundle‑id path + WAL/`query_only` open, 14 tests), red now means *recording* only (hero + `Button.primary` → ink‑on‑paper), i18n complete in all 19 languages (+710 keys, orphans purged), `tray_idle_dark.png` is a real dark glyph (`scripts/gen-tray-dark.py`).
 
 **What's NOT done:** a signed/notarized `.app`/`.dmg` (needs full Xcode), true acoustic echo cancellation (only the transcript‑level bleed dup is handled), the iPhone target (needs Xcode), the real‑meeting validation that would let auto‑capture default to on. See §10–§11.
 
@@ -58,7 +58,7 @@ export HANDY_FORCE_AI_STUB=1              # CLT lacks the @Generable macro plugi
 
 Drop `HANDY_FORCE_AI_STUB` once **full Xcode** is installed (also needed for the iPhone target and a real bundle).
 
-**Runtime data:** `~/Library/Application Support/com.pais.handy/` → `history.db` (SQLite) + `recordings/` (`*.session.pcm` live, `*.wav` finalized). **Log:** `~/Library/Logs/com.pais.handy/handy.log`.
+**Runtime data:** `~/Library/Application Support/com.uppify.plaudy/` → `history.db` (SQLite) + `recordings/` (`*.session.pcm` live, `*.wav` finalized). **Log:** `~/Library/Logs/com.uppify.plaudy/handy.log`.
 
 ---
 
@@ -70,7 +70,7 @@ Drop `HANDY_FORCE_AI_STUB` once **full Xcode** is installed (also needed for the
 | System/loopback audio (Fase 1) | `audio_toolkit/audio/system_audio.rs` (CoreAudio Process Tap) | live row 12 ("Ragazzi, buonasera…") | High |
 | Local diarization (Fase 2) | `managers/diarization.rs` + sherpa‑onnx | live rows 9 (2 spk) / 10 (3 spk); `align` unit‑tested | High |
 | Per‑row transcript **status** | migration #6, `TranscriptionStatus` | `transcribing → done/failed`; unit‑tested | High |
-| Menu‑bar **"graffetta"** | `tray.rs` `toggle_session` + `lib.rs` listener | compiles; live toggle via CLI/tray | High |
+| Menu‑bar **ear** | `tray.rs` `toggle_session` + `lib.rs` listener | compiles; live toggle via CLI/tray | High |
 | **Dual‑stream meeting capture** | `session.rs` `start_sources`/`finalize_session`, `mix_tracks` | **live row 19** (Steve Jobs talk): mic="Me" + system="Speaker 1", merged, accurate transcript | High |
 | **Bleed de‑dup** (`drop_bleed`) | `diarization.rs` | **live row 23**: same speaker‑bleed scenario → collapsed to a single speaker, transcript once; 3 unit tests | High |
 | Startup **self‑healing** | `history.rs` `fail_stale_transcribing()` | unit‑tested; wired before `recover_interrupted` | High |
@@ -93,7 +93,7 @@ Drop `HANDY_FORCE_AI_STUB` once **full Xcode** is installed (also needed for the
 | Kind | Name | Notes |
 | --- | --- | --- |
 | Command | `start_session(source)` | single source (`"Mic"` / `"SystemAudio"`) |
-| Command | `start_meeting()` | **dual** mic + system (the graffetta action) |
+| Command | `start_meeting()` | **dual** mic + system (the ear's action) |
 | Command | `stop_session()` · `is_session_active()` | |
 | Command | `get_session_segments(id)` · `download_diarization_models` · `is_diarization_available` | |
 | Event | `session-state-changed` | `{ active, source }` → drives UI + tray icon (single source of truth) |
@@ -161,7 +161,7 @@ CREATE INDEX idx_segments_history ON transcription_segments(history_id);
 
 **New:** `managers/session.rs` (long‑form + dual capture), `audio_toolkit/audio/system_audio.rs` (CoreAudio tap), `managers/diarization.rs` (`align`/`label_segments`/`merge_segments`/`drop_bleed` + `DiarizationManager`), `managers/auto_capture.rs` (seamless auto‑capture brain + supervisor), `audio_toolkit/audio/output_sensor.rs` (per‑process trigger sensor), `commands/session.rs`, `resources/models/diarization/*.onnx`, `resources/tray_listening.png` (the ear), **`handy/mcp/{db,server}.ts,db.test.ts,package.json,README.md}`**, **`.mcp.json`** (repo root), `src/components/settings/sessions/SessionsSettings.tsx`.
 
-**Modified (key):** `managers/history.rs` (migrations #5/#6, status, dual‑namespace `write_segments`, `save_pending_entry`, `fail_stale_transcribing`), `managers/transcription.rs` (`transcribe_with_segments`), `managers/model.rs` (diarization download + bundle), `tray.rs` (graffetta), `lib.rs` (wiring, listener, `--toggle-meeting`, `start_meeting`, startup self‑heal), `cli.rs`, `audio_toolkit/audio/recorder.rs` (`with_chunk_sink`), `commands/history.rs`, `components/settings/history/HistorySettings.tsx` (timeline + speaker chips + status states), `Sidebar.tsx`, `i18n/locales/{en,it}/translation.json`, `Cargo.toml`/`.cargo/config.toml`/`build.rs`/`Info.plist`, `src/bindings.ts` (regenerated). Full table in [CODEBASE.md §11](CODEBASE.md).
+**Modified (key):** `managers/history.rs` (migrations #5/#6, status, dual‑namespace `write_segments`, `save_pending_entry`, `fail_stale_transcribing`), `managers/transcription.rs` (`transcribe_with_segments`), `managers/model.rs` (diarization download + bundle), `tray.rs` (the ear), `lib.rs` (wiring, listener, `--toggle-meeting`, `start_meeting`, startup self‑heal), `cli.rs`, `audio_toolkit/audio/recorder.rs` (`with_chunk_sink`), `commands/history.rs`, `components/settings/history/HistorySettings.tsx` (timeline + speaker chips + status states), `Sidebar.tsx`, `i18n/locales/{en,it}/translation.json`, `Cargo.toml`/`.cargo/config.toml`/`build.rs`/`Info.plist`, `src/bindings.ts` (regenerated). Full table in [CODEBASE.md §11](CODEBASE.md).
 
 ---
 
@@ -193,7 +193,7 @@ cd ../ && bunx tsc --noEmit && bun run lint                    # clean
 #   3) CAPTURE:
 #      ./target/debug/handy --toggle-meeting; say "the quarterly numbers look strong"; ./target/debug/handy --toggle-meeting ; sleep 30
 #   4) INSPECT (expect ONE speaker "Speaker 1", text once — bleed de-duped):
-#      sqlite3 -readonly ~/Library/Application\ Support/com.pais.handy/history.db \
+#      sqlite3 -readonly ~/Library/Application\ Support/com.uppify.plaudy/history.db \
 #        "SELECT label FROM speakers WHERE history_id=(SELECT max(id) FROM transcription_history);"
 #   With real human speech on a real call + headphones: expect "Me" (you) AND the remote "Speaker N", cleanly separated.
 
@@ -205,8 +205,8 @@ cd ../ && bunx tsc --noEmit && bun run lint                    # clean
 
 ## 10. Repo / git state
 
-- **Remote:** `github.com/uppifyagency/plaude-local` (private), branch `main`. The upstream `handy/.git` was **flattened** into this single repo (upstream = `cjpais/Handy`).
-- **Working tree is NOT committed** — this session's work (dual capture, graffetta, MCP, status column, bleed de‑dup, self‑heal, docs) is staged in the tree only. **Commit/push only when the user asks.** End commit messages with the `Co-Authored-By: Claude …` trailer; branch off `main` first if needed.
+- **Remote:** `github.com/uppifyagency/plaudy` (private), branch `main`. The upstream `handy/.git` was **flattened** into this single repo (upstream = `cjpais/Handy`).
+- **Working tree is NOT committed** — this session's work (dual capture, the tray ear, MCP, status column, bleed de‑dup, self‑heal, docs) is staged in the tree only. **Commit/push only when the user asks.** End commit messages with the `Co-Authored-By: Claude …` trailer; branch off `main` first if needed.
 - **Models are committed** (`resources/models/diarization/*.onnx`, ~46 MB); `git config http.postBuffer 524288000` is set locally for the large push. `.gitignore` excludes `target/`, `node_modules/`, `dist/`, and stray `*.onnx` loose in `src-tauri/`.
 - `handy/mcp/` has **no `node_modules`** (dependency‑free) — nothing to install.
 

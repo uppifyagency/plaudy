@@ -45,7 +45,9 @@ export function seedSessions(db: Database): void {
   db.run(
     "INSERT INTO transcription_history (id, file_name, timestamp, title, transcription_text, status) VALUES (1, 'a.wav', 1000, 'Standup', 'Parliamo del budget per il prossimo trimestre', 'done')",
   );
-  db.run("INSERT INTO speakers (id, history_id, label) VALUES (10, 1, 'Me'), (11, 1, 'Speaker 1')");
+  db.run(
+    "INSERT INTO speakers (id, history_id, label) VALUES (10, 1, 'Me'), (11, 1, 'Speaker 1')",
+  );
   db.run(
     "INSERT INTO transcription_segments (history_id, speaker_id, start_ms, end_ms, text) VALUES (1, 10, 0, 1000, 'Parliamo del budget'), (1, 11, 1000, 2000, 'per il prossimo trimestre')",
   );

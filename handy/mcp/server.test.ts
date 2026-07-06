@@ -9,7 +9,10 @@ import { createDb, seedSessions } from "./fixture";
 const SERVER = join(import.meta.dir, "server.ts");
 
 function fixtureDbPath(): string {
-  const path = join(mkdtempSync(join(tmpdir(), "plaude-mcp-test-")), "history.db");
+  const path = join(
+    mkdtempSync(join(tmpdir(), "plaude-mcp-test-")),
+    "history.db",
+  );
   const db = createDb(path);
   seedSessions(db);
   db.close();
@@ -43,14 +46,19 @@ function spawnServer(dbPath: string) {
   let nextId = 0;
   async function call(method: string, params?: unknown): Promise<any> {
     const id = ++nextId;
-    proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    proc.stdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n",
+    );
     proc.stdin.flush();
     const msg = await readMsg();
     expect(msg.id).toBe(id);
     return msg;
   }
   // tools/call sugar: returns the MCP tool result ({ content, isError? }).
-  async function callTool(name: string, args: Record<string, unknown> = {}): Promise<any> {
+  async function callTool(
+    name: string,
+    args: Record<string, unknown> = {},
+  ): Promise<any> {
     return (await call("tools/call", { name, arguments: args })).result;
   }
   function rawLine(line: string): void {
@@ -67,7 +75,9 @@ function spawnServer(dbPath: string) {
       capabilities: {},
       clientInfo: { name: "test", version: "0.0.0" },
     });
-    rawLine(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }));
+    rawLine(
+      JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    );
     return msg;
   }
   return { call, callTool, rawLine, close, initialize };
@@ -129,7 +139,10 @@ test("handshake, tools/list, tool calls, clamping, errors, malformed-line resili
 });
 
 test("missing history.db: initialize still succeeds, tool calls return a friendly error", async () => {
-  const missing = join(mkdtempSync(join(tmpdir(), "plaude-mcp-nodb-")), "history.db");
+  const missing = join(
+    mkdtempSync(join(tmpdir(), "plaude-mcp-nodb-")),
+    "history.db",
+  );
   const srv = spawnServer(missing);
   try {
     const init = await srv.initialize();

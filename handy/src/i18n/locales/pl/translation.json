@@ -6,7 +6,9 @@
     "unloadModel": "Zwolnij model",
     "model": "Model",
     "quit": "Zamknij",
-    "cancel": "Anuluj"
+    "cancel": "Anuluj",
+    "startRecording": "Rozpocznij nagrywanie",
+    "stopRecording": "Zatrzymaj nagrywanie"
   },
   "sidebar": {
     "general": "Ogólne",
@@ -15,7 +17,8 @@
     "postProcessing": "Postproces",
     "history": "Historia",
     "debug": "Debugowanie",
-    "about": "O programie"
+    "about": "O programie",
+    "sessions": "Sesje"
   },
   "onboarding": {
     "subtitle": "Aby rozpocząć, wybierz model transkrypcji",
@@ -100,7 +103,7 @@
     },
     "permissions": {
       "title": "Wymagane uprawnienia",
-      "description": "Handy potrzebuje kilku uprawnień, aby działać poprawnie.",
+      "description": "Plaudy potrzebuje kilku uprawnień, aby działać poprawnie.",
       "microphone": {
         "title": "Dostęp do mikrofonu",
         "description": "Wymagany do słyszenia Twojego głosu w celu transkrypcji."
@@ -176,7 +179,7 @@
     "general": {
       "title": "Ogólne",
       "shortcut": {
-        "title": "Skróty Handy",
+        "title": "Skróty Plaudy",
         "description": "Skonfiguruj skróty klawiaturowe do uruchamiania nagrywania mowy",
         "loading": "Wczytywanie skrótów...",
         "none": "Brak skonfigurowanych skrótów",
@@ -276,11 +279,11 @@
       },
       "autostart": {
         "label": "Uruchamiaj przy starcie",
-        "description": "Automatycznie uruchamiaj Handy po zalogowaniu."
+        "description": "Automatycznie uruchamiaj Plaudy po zalogowaniu."
       },
       "showTrayIcon": {
         "label": "Pokaż ikonę w zasobniku",
-        "description": "Wyświetlaj ikonę Handy w zasobniku systemowym."
+        "description": "Wyświetlaj ikonę Plaudy w zasobniku systemowym."
       },
       "overlay": {
         "title": "Pozycja nakładki",
@@ -431,7 +434,20 @@
       "retranscribe": "Transkrybuj ponownie",
       "retranscribeError": "Nie udało się ponownie transkrybować. Spróbuj ponownie.",
       "transcribing": "Transkrybuję...",
-      "transcriptionFailed": "Transkrypcja nie powiodła się. Możesz transkrybować ponownie za pomocą ikony ponowienia."
+      "transcriptionFailed": "Transkrypcja nie powiodła się. Możesz transkrybować ponownie za pomocą ikony ponowienia.",
+      "noSpeech": "Nie wykryto mowy",
+      "unknownSpeaker": "Nieznany",
+      "expand": "Pokaż szczegóły",
+      "collapse": "Ukryj szczegóły",
+      "sourceMeeting": "Spotkanie",
+      "sourceMic": "Mikrofon",
+      "sourceSystem": "Dźwięk systemowy",
+      "sourceDictation": "Dyktowanie",
+      "searchPlaceholder": "Szukaj nagrań",
+      "noResults": "Żadne nagranie nie pasuje do wyszukiwania",
+      "selectEntry": "Wybierz nagranie, aby zobaczyć transkrypcję",
+      "today": "Dzisiaj",
+      "yesterday": "Wczoraj"
     },
     "debug": {
       "title": "Debugowanie",
@@ -445,7 +461,7 @@
       },
       "updateChecks": {
         "label": "Sprawdzaj aktualizacje",
-        "description": "Automatycznie sprawdzaj nowe wersje Handy"
+        "description": "Automatycznie sprawdzaj nowe wersje Plaudy"
       },
       "soundTheme": {
         "label": "Motyw dźwiękowy",
@@ -513,29 +529,46 @@
       "title": "O programie",
       "version": {
         "title": "Wersja",
-        "description": "Aktualna wersja Handy"
+        "description": "Aktualna wersja Plaudy"
       },
       "appDataDirectory": {
         "title": "Katalog danych aplikacji",
-        "description": "Miejsce, gdzie Handy przechowuje swoje dane"
+        "description": "Miejsce, gdzie Plaudy przechowuje swoje dane"
       },
       "sourceCode": {
         "title": "Kod źródłowy",
         "description": "Zobacz kod źródłowy i współtwórz",
         "button": "Zobacz na GitHub"
       },
-      "supportDevelopment": {
-        "title": "Wspieraj rozwój",
-        "description": "Pomóż nam dalej rozwijać Handy",
-        "button": "Wesprzyj"
-      },
       "acknowledgments": {
         "title": "Podziękowania",
         "whisper": {
           "title": "Whisper.cpp",
           "description": "Wydajne wykonywanie modelu rozpoznawania mowy Whisper od OpenAI",
-          "details": "Handy używa Whisper.cpp do szybkiego, lokalnego przetwarzania mowy na tekst. Dzięki niesamowitej pracy Georgi Gerganova i współtwórców."
+          "details": "Plaudy używa Whisper.cpp do szybkiego, lokalnego przetwarzania mowy na tekst. Dzięki niesamowitej pracy Georgi Gerganova i współtwórców."
         }
+      }
+    },
+    "sessions": {
+      "title": "Mikrofon + dźwięk systemowy, transkrypcja na urządzeniu",
+      "description": "Nagrywaj długie sesje z mikrofonu lub dźwięku systemowego tego Maca. Po zatrzymaniu nagranie jest transkrybowane i dodawane do Historii.",
+      "sourceLabel": "Źródło",
+      "sourceMic": "Mikrofon",
+      "sourceSystem": "Dźwięk systemowy",
+      "start": "Rozpocznij nagrywanie",
+      "stop": "Zatrzymaj nagrywanie",
+      "recording": "Nagrywanie…",
+      "modeMeeting": "Spotkanie",
+      "modeMic": "Mikrofon",
+      "modeSystem": "Dźwięk systemowy",
+      "tapToStart": "Dotknij, aby nagrać",
+      "capturingMeeting": "Nagrywanie: ty + dźwięk systemowy",
+      "capturingMic": "Nagrywanie mikrofonu",
+      "capturingSystem": "Nagrywanie dźwięku systemowego",
+      "privacyNote": "Nagrywa mikrofon i dźwięk tego Maca jako dwa strumienie, rozdzielone według mówiących. Nic nigdy nie opuszcza twojego Maca.",
+      "autoCapture": {
+        "title": "Automatyczne nagrywanie",
+        "description": "Automatycznie rozpoczyna sesję spotkania, gdy inna aplikacja odtwarza dźwięk (rozmowa, wideo), i zatrzymuje ją, gdy zapada cisza. Eksperymentalne — wszystko zostaje na tym Macu."
       }
     }
   },
@@ -576,11 +609,16 @@
     "off": "Wyłącz",
     "yes": "Tak",
     "no": "Nie",
-    "noOptionsFound": "Nie znaleziono opcji"
+    "noOptionsFound": "Nie znaleziono opcji",
+    "copy": "Kopiuj",
+    "copyToClipboard": "Kopiuj do schowka",
+    "notAvailable": "Niedostępne",
+    "selectOption": "Wybierz opcję...",
+    "previewSoundTheme": "Odsłuchaj motyw dźwiękowy (odtwarza start, potem stop)"
   },
   "accessibility": {
     "permissionsRequired": "Wymagane uprawnienia dostępności",
-    "permissionsDescription": "Handy potrzebuje uprawnień dostępności, aby wpisywać transkrybowany tekst.",
+    "permissionsDescription": "Plaudy potrzebuje uprawnień dostępności, aby wpisywać transkrybowany tekst.",
     "openSettings": "Otwórz ustawienia systemowe",
     "dismiss": "Zamknij"
   },
@@ -603,7 +641,7 @@
   },
   "appLanguage": {
     "title": "Język aplikacji",
-    "description": "Zmień język interfejsu Handy"
+    "description": "Zmień język interfejsu Plaudy"
   },
   "overlay": {
     "transcribing": "Transkrypcja...",

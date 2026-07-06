@@ -6,7 +6,9 @@
     "unloadModel": "تفريغ النموذج",
     "model": "النموذج",
     "quit": "إنهاء",
-    "cancel": "إلغاء"
+    "cancel": "إلغاء",
+    "startRecording": "بدء التسجيل",
+    "stopRecording": "إيقاف التسجيل"
   },
   "sidebar": {
     "general": "عام",
@@ -15,7 +17,8 @@
     "history": "السجل",
     "debug": "تصحيح الأخطاء",
     "about": "حول",
-    "models": "النماذج"
+    "models": "النماذج",
+    "sessions": "الجلسات"
   },
   "onboarding": {
     "subtitle": "للبدء، اختر نموذج التفريغ الصوتي",
@@ -100,7 +103,7 @@
     },
     "permissions": {
       "title": "الأذونات المطلوبة",
-      "description": ".يحتاج Handy إلى بعض الأذونات ليعمل بشكل صحيح",
+      "description": ".يحتاج Plaudy إلى بعض الأذونات ليعمل بشكل صحيح",
       "microphone": {
         "title": "الوصول إلى الميكروفون",
         "description": ".مطلوب لسماع صوتك من أجل التفريغ الصوتي"
@@ -154,7 +157,7 @@
     "general": {
       "title": "عام",
       "shortcut": {
-        "title": "اختصارات Handy",
+        "title": "اختصارات Plaudy",
         "description": "إعداد اختصارات لوحة المفاتيح لبدء تسجيل التفريغ الصوتي",
         "loading": "...جاري تحميل الاختصارات",
         "none": "لا توجد اختصارات مجهزة",
@@ -254,11 +257,11 @@
       },
       "autostart": {
         "label": "التشغيل عند بدء التشغيل",
-        "description": ".بدء تشغيل Handy تلقائياً عند تسجيل الدخول إلى جهاز الكمبيوتر الخاص بك"
+        "description": ".بدء تشغيل Plaudy تلقائياً عند تسجيل الدخول إلى جهاز الكمبيوتر الخاص بك"
       },
       "showTrayIcon": {
         "label": "إظهار أيقونة شريط النظام",
-        "description": ".عرض أيقونة Handy في شريط النظام"
+        "description": ".عرض أيقونة Plaudy في شريط النظام"
       },
       "overlay": {
         "title": "موقع التراكب",
@@ -409,7 +412,20 @@
       "retranscribe": "إعادة النسخ",
       "retranscribeError": "فشلت إعادة النسخ. يرجى المحاولة مرة أخرى.",
       "transcribing": "جارٍ النسخ...",
-      "transcriptionFailed": "فشل النسخ. يمكنك إعادة النسخ باستخدام أيقونة إعادة المحاولة."
+      "transcriptionFailed": "فشل النسخ. يمكنك إعادة النسخ باستخدام أيقونة إعادة المحاولة.",
+      "noSpeech": "لم يُكتشف أي كلام",
+      "unknownSpeaker": "غير معروف",
+      "expand": "إظهار التفاصيل",
+      "collapse": "إخفاء التفاصيل",
+      "sourceMeeting": "اجتماع",
+      "sourceMic": "الميكروفون",
+      "sourceSystem": "صوت النظام",
+      "sourceDictation": "إملاء",
+      "searchPlaceholder": "البحث في التسجيلات",
+      "noResults": "لا توجد تسجيلات مطابقة لبحثك",
+      "selectEntry": "اختر تسجيلًا لعرض التفريغ النصي",
+      "today": "اليوم",
+      "yesterday": "أمس"
     },
     "debug": {
       "title": "تصحيح الأخطاء",
@@ -423,7 +439,7 @@
       },
       "updateChecks": {
         "label": "التحقق من وجود تحديثات",
-        "description": "التحقق تلقائياً من وجود إصدارات جديدة من Handy"
+        "description": "التحقق تلقائياً من وجود إصدارات جديدة من Plaudy"
       },
       "soundTheme": {
         "label": "سمة الصوت",
@@ -491,28 +507,23 @@
       "title": "حول",
       "version": {
         "title": "الإصدار",
-        "description": "الإصدار الحالي من Handy"
+        "description": "الإصدار الحالي من Plaudy"
       },
       "appDataDirectory": {
         "title": "مجلد بيانات التطبيق",
-        "description": "الموقع الذي يخزن فيه Handy بياناته"
+        "description": "الموقع الذي يخزن فيه Plaudy بياناته"
       },
       "sourceCode": {
         "title": "كود المصدر",
         "description": "عرض كود المصدر والمساهمة",
         "button": "عرض على GitHub"
       },
-      "supportDevelopment": {
-        "title": "دعم التطوير",
-        "description": "ساعدنا في مواصلة بناء Handy",
-        "button": "تبرع"
-      },
       "acknowledgments": {
         "title": "شكر وتقدير",
         "whisper": {
           "title": "Whisper.cpp",
           "description": "استنتاج عالي الأداء لنموذج التعرف التلقائي على الكلام Whisper من OpenAI",
-          "details": ".يستخدم Handy برنامج Whisper.cpp لمعالجة سريعة ومحلية لتحويل الكلام إلى نص. شكراً للعمل الرائع الذي قام به Georgi Gerganov والمساهمون"
+          "details": ".يستخدم Plaudy برنامج Whisper.cpp لمعالجة سريعة ومحلية لتحويل الكلام إلى نص. شكراً للعمل الرائع الذي قام به Georgi Gerganov والمساهمون"
         }
       }
     },
@@ -537,6 +548,28 @@
         "allLanguages": "جميع اللغات"
       },
       "noModelsMatch": "لا توجد نماذج مطابقة لهذا الفلتر."
+    },
+    "sessions": {
+      "title": "الميكروفون + صوت النظام، مع تفريغ نصي على الجهاز",
+      "description": "سجّل تسجيلًا طويلًا من الميكروفون أو من صوت نظام هذا الـ Mac. عند الإيقاف يُفرَّغ نصيًا ويُضاف إلى السجل.",
+      "sourceLabel": "المصدر",
+      "sourceMic": "الميكروفون",
+      "sourceSystem": "صوت النظام",
+      "start": "بدء التسجيل",
+      "stop": "إيقاف التسجيل",
+      "recording": "جارٍ التسجيل…",
+      "modeMeeting": "اجتماع",
+      "modeMic": "الميكروفون",
+      "modeSystem": "صوت النظام",
+      "tapToStart": "انقر للتسجيل",
+      "capturingMeeting": "يجري التقاط صوتك + صوت النظام",
+      "capturingMic": "يجري التقاط الميكروفون",
+      "capturingSystem": "يجري التقاط صوت النظام",
+      "privacyNote": "يسجّل الميكروفون وصوت هذا الـ Mac كتدفقين منفصلين حسب المتحدث. لا شيء يغادر جهازك أبدًا.",
+      "autoCapture": {
+        "title": "التقاط تلقائي",
+        "description": "يبدأ جلسة اجتماع تلقائيًا عندما يشغّل تطبيق آخر صوتًا (مكالمة، فيديو)، ويتوقف عند السكون. تجريبي — كل شيء يبقى على هذا الـ Mac."
+      }
     }
   },
   "footer": {
@@ -576,11 +609,16 @@
     "off": "إيقاف",
     "yes": "نعم",
     "no": "لا",
-    "noOptionsFound": "لم يتم العثور على خيارات"
+    "noOptionsFound": "لم يتم العثور على خيارات",
+    "copy": "نسخ",
+    "copyToClipboard": "نسخ إلى الحافظة",
+    "notAvailable": "غير متاح",
+    "selectOption": "اختر خيارًا...",
+    "previewSoundTheme": "معاينة سمة الصوت (يشغّل صوت البدء ثم الإيقاف)"
   },
   "accessibility": {
     "permissionsRequired": "أذونات إمكانية الوصول مطلوبة",
-    "permissionsDescription": ".يحتاج Handy إلى أذونات إمكانية الوصول لكتابة النص المفرغ",
+    "permissionsDescription": ".يحتاج Plaudy إلى أذونات إمكانية الوصول لكتابة النص المفرغ",
     "openSettings": "فتح إعدادات النظام",
     "dismiss": "تجاهل"
   },
@@ -603,7 +641,7 @@
   },
   "appLanguage": {
     "title": "لغة التطبيق",
-    "description": "تغيير لغة واجهة Handy"
+    "description": "تغيير لغة واجهة Plaudy"
   },
   "overlay": {
     "transcribing": "...جاري التفريغ",

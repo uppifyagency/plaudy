@@ -69,8 +69,8 @@ export HANDY_FORCE_AI_STUB=1              # la CLT non ha il macro plugin @Gener
 | Lint FE (i18n enforced) | `cd handy && bun run lint` |
 | Binario release | `cd handy && bun tauri build --no-bundle` → `target/release/handy` (~36 MB) |
 
-- **Dati app:** `~/Library/Application Support/com.pais.handy/` → `history.db` (SQLite) + `recordings/` (`*.session.pcm` live, `*.wav` finalizzati). Impostazioni: `settings_store.json` (chiavi sotto `settings.*`).
-- **Log:** `~/Library/Logs/com.pais.handy/handy.log` (e nello stdout di `bun tauri dev`).
+- **Dati app:** `~/Library/Application Support/com.uppify.plaudy/` → `history.db` (SQLite) + `recordings/` (`*.session.pcm` live, `*.wav` finalizzati). Impostazioni: `settings_store.json` (chiavi sotto `settings.*`).
+- **Log:** `~/Library/Logs/com.uppify.plaudy/handy.log` (e nello stdout di `bun tauri dev`).
 
 > ⚠️ Il dev server **osserva `src-tauri/`** e ricompila+rilancia a ogni salvataggio `.rs`. Se tocchi più file in sequenza vedrai errori *intermedi* (es. `non-exhaustive match`) finché non hai completato: è normale. Per una conferma autorevole di compilazione, ferma il dev server e lancia `cargo check --lib` (altrimenti i due `cargo` litigano sul lock di `target/`).
 
@@ -193,7 +193,7 @@ cd handy/src-tauri && cargo test --lib            # 98 passed
 
 **Riabilitare l'auto‑capture per sperimentare** (è off di default):
 ```bash
-python3 - "$HOME/Library/Application Support/com.pais.handy/settings_store.json" <<'PY'
+python3 - "$HOME/Library/Application Support/com.uppify.plaudy/settings_store.json" <<'PY'
 import json,sys; p=sys.argv[1]; d=json.load(open(p))
 d.setdefault("settings",{})["auto_capture_enabled"]=True
 json.dump(d,open(p,"w"),indent=2); print("on")
@@ -204,18 +204,18 @@ PY
 **Validare cattura/sessione SENZA voce umana** (usa `say` come "altra parte"):
 ```bash
 say "the quarterly numbers look strong" &   # audio di sistema
-# osserva ~/Library/Logs/com.pais.handy/handy.log o lo stdout del dev server
+# osserva ~/Library/Logs/com.uppify.plaudy/handy.log o lo stdout del dev server
 ```
 
 **Ispezionare la Cronologia:**
 ```bash
-DB="$HOME/Library/Application Support/com.pais.handy/history.db"
+DB="$HOME/Library/Application Support/com.uppify.plaudy/history.db"
 sqlite3 -readonly "$DB" "SELECT id, length(trim(transcription_text)), status FROM transcription_history ORDER BY id DESC LIMIT 10;"
 ```
 
 **Pulire righe‑spazzatura vuote** (con backup):
 ```bash
-DB="$HOME/Library/Application Support/com.pais.handy/history.db"; cp "$DB" "$DB.bak"
+DB="$HOME/Library/Application Support/com.uppify.plaudy/history.db"; cp "$DB" "$DB.bak"
 sqlite3 "$DB" "PRAGMA foreign_keys=ON; DELETE FROM transcription_history WHERE length(trim(transcription_text))=0;"
 ```
 

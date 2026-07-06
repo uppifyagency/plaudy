@@ -22,11 +22,12 @@ export const Dropdown: React.FC<DropdownProps> = ({
   selectedValue,
   onSelect,
   className = "",
-  placeholder = "Select an option...",
+  placeholder,
   disabled = false,
   onRefresh,
 }) => {
   const { t } = useTranslation();
+  const resolvedPlaceholder = placeholder ?? t("common.selectOption");
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -70,7 +71,9 @@ export const Dropdown: React.FC<DropdownProps> = ({
         onClick={handleToggle}
         disabled={disabled}
       >
-        <span className="truncate">{selectedOption?.label || placeholder}</span>
+        <span className="truncate">
+          {selectedOption?.label || resolvedPlaceholder}
+        </span>
         <svg
           className={`w-4 h-4 transition-transform duration-200 ${isOpen ? "transform rotate-180" : ""}`}
           fill="none"
@@ -86,7 +89,7 @@ export const Dropdown: React.FC<DropdownProps> = ({
         </svg>
       </button>
       {isOpen && !disabled && (
-        <div className="absolute top-full left-0 right-0 mt-1 bg-background border border-mid-gray/80 rounded-md shadow-lg z-50 max-h-60 overflow-y-auto">
+        <div className="glass-panel-strong absolute top-full left-0 right-0 mt-1 z-50 max-h-60 overflow-y-auto">
           {options.length === 0 ? (
             <div className="px-2 py-1 text-sm text-mid-gray">
               {t("common.noOptionsFound")}
@@ -104,7 +107,9 @@ export const Dropdown: React.FC<DropdownProps> = ({
                 onClick={() => handleSelect(option.value)}
                 disabled={option.disabled}
               >
-                <span className="whitespace-normal break-words">{option.label}</span>
+                <span className="whitespace-normal break-words">
+                  {option.label}
+                </span>
               </button>
             ))
           )}

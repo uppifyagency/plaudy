@@ -6,7 +6,9 @@
     "unloadModel": "Modell entladen",
     "model": "Modell",
     "quit": "Beenden",
-    "cancel": "Abbrechen"
+    "cancel": "Abbrechen",
+    "startRecording": "Aufnahme starten",
+    "stopRecording": "Aufnahme stoppen"
   },
   "sidebar": {
     "general": "Allgemein",
@@ -15,7 +17,8 @@
     "postProcessing": "Nachbearbeitung",
     "history": "Verlauf",
     "debug": "Debug",
-    "about": "Info"
+    "about": "Info",
+    "sessions": "Sitzungen"
   },
   "onboarding": {
     "subtitle": "Wähle ein Transkriptionsmodell, um loszulegen",
@@ -100,7 +103,7 @@
     },
     "permissions": {
       "title": "Berechtigungen erforderlich",
-      "description": "Handy benötigt einige Berechtigungen, um richtig zu funktionieren.",
+      "description": "Plaudy benötigt einige Berechtigungen, um richtig zu funktionieren.",
       "microphone": {
         "title": "Mikrofonzugriff",
         "description": "Erforderlich, um deine Stimme für die Transkription zu hören."
@@ -176,7 +179,7 @@
     "general": {
       "title": "Allgemein",
       "shortcut": {
-        "title": "Handy-Tastenkürzel",
+        "title": "Plaudy-Tastenkürzel",
         "description": "Tastenkürzel für die Sprachaufnahme konfigurieren",
         "loading": "Tastenkürzel werden geladen...",
         "none": "Keine Tastenkürzel konfiguriert",
@@ -276,11 +279,11 @@
       },
       "autostart": {
         "label": "Beim Start ausführen",
-        "description": "Handy automatisch beim Anmelden starten."
+        "description": "Plaudy automatisch beim Anmelden starten."
       },
       "showTrayIcon": {
         "label": "Taskleistensymbol anzeigen",
-        "description": "Das Handy-Symbol in der Taskleiste anzeigen."
+        "description": "Das Plaudy-Symbol in der Taskleiste anzeigen."
       },
       "overlay": {
         "title": "Overlay-Position",
@@ -431,7 +434,20 @@
       "retranscribe": "Erneut transkribieren",
       "retranscribeError": "Erneute Transkription fehlgeschlagen. Bitte versuche es erneut.",
       "transcribing": "Transkribiere...",
-      "transcriptionFailed": "Transkription fehlgeschlagen. Du kannst über das Wiederholen-Symbol erneut transkribieren."
+      "transcriptionFailed": "Transkription fehlgeschlagen. Du kannst über das Wiederholen-Symbol erneut transkribieren.",
+      "noSpeech": "Keine Sprache erkannt",
+      "unknownSpeaker": "Unbekannt",
+      "expand": "Details anzeigen",
+      "collapse": "Details ausblenden",
+      "sourceMeeting": "Meeting",
+      "sourceMic": "Mikrofon",
+      "sourceSystem": "Systemaudio",
+      "sourceDictation": "Diktat",
+      "searchPlaceholder": "Aufnahmen durchsuchen",
+      "noResults": "Keine Aufnahmen entsprechen deiner Suche",
+      "selectEntry": "Wähle eine Aufnahme, um ihr Transkript zu sehen",
+      "today": "Heute",
+      "yesterday": "Gestern"
     },
     "debug": {
       "title": "Debug",
@@ -445,7 +461,7 @@
       },
       "updateChecks": {
         "label": "Nach Updates suchen",
-        "description": "Automatisch nach neuen Versionen von Handy suchen"
+        "description": "Automatisch nach neuen Versionen von Plaudy suchen"
       },
       "soundTheme": {
         "label": "Sound-Thema",
@@ -513,29 +529,46 @@
       "title": "Info",
       "version": {
         "title": "Version",
-        "description": "Aktuelle Version von Handy"
+        "description": "Aktuelle Version von Plaudy"
       },
       "appDataDirectory": {
         "title": "App-Datenverzeichnis",
-        "description": "Speicherort der Handy-Daten"
+        "description": "Speicherort der Plaudy-Daten"
       },
       "sourceCode": {
         "title": "Quellcode",
         "description": "Quellcode ansehen und beitragen",
         "button": "Auf GitHub ansehen"
       },
-      "supportDevelopment": {
-        "title": "Entwicklung unterstützen",
-        "description": "Hilf uns, Handy weiterzuentwickeln",
-        "button": "Spenden"
-      },
       "acknowledgments": {
         "title": "Danksagungen",
         "whisper": {
           "title": "Whisper.cpp",
           "description": "Hochleistungs-Inferenz des Whisper-Spracherkennungsmodells von OpenAI",
-          "details": "Handy verwendet Whisper.cpp für schnelle, lokale Sprach-zu-Text-Verarbeitung. Dank an Georgi Gerganov und die Mitwirkenden für ihre großartige Arbeit."
+          "details": "Plaudy verwendet Whisper.cpp für schnelle, lokale Sprach-zu-Text-Verarbeitung. Dank an Georgi Gerganov und die Mitwirkenden für ihre großartige Arbeit."
         }
+      }
+    },
+    "sessions": {
+      "title": "Mikrofon + Systemaudio, auf dem Gerät transkribiert",
+      "description": "Nimm eine lange Aufnahme über dein Mikrofon oder das Systemaudio dieses Macs auf. Beim Stoppen wird sie transkribiert und deinem Verlauf hinzugefügt.",
+      "sourceLabel": "Quelle",
+      "sourceMic": "Mikrofon",
+      "sourceSystem": "Systemaudio",
+      "start": "Aufnahme starten",
+      "stop": "Aufnahme stoppen",
+      "recording": "Aufnahme läuft…",
+      "modeMeeting": "Meeting",
+      "modeMic": "Mikrofon",
+      "modeSystem": "Systemaudio",
+      "tapToStart": "Zum Aufnehmen tippen",
+      "capturingMeeting": "Du + Systemaudio werden aufgenommen",
+      "capturingMic": "Mikrofon wird aufgenommen",
+      "capturingSystem": "Systemaudio wird aufgenommen",
+      "privacyNote": "Nimmt dein Mikrofon und das Audio dieses Macs als zwei Streams auf, nach Sprecher getrennt. Nichts verlässt jemals deinen Mac.",
+      "autoCapture": {
+        "title": "Auto-Aufnahme",
+        "description": "Startet automatisch eine Meeting-Sitzung, wenn eine andere App Audio abspielt (ein Anruf, ein Video), und stoppt, wenn es still wird. Experimentell — alles bleibt auf diesem Mac."
       }
     }
   },
@@ -576,11 +609,16 @@
     "off": "Aus",
     "yes": "Ja",
     "no": "Nein",
-    "noOptionsFound": "Keine Optionen gefunden"
+    "noOptionsFound": "Keine Optionen gefunden",
+    "copy": "Kopieren",
+    "copyToClipboard": "In die Zwischenablage kopieren",
+    "notAvailable": "Nicht verfügbar",
+    "selectOption": "Option auswählen...",
+    "previewSoundTheme": "Soundthema anhören (spielt Start, dann Stopp)"
   },
   "accessibility": {
     "permissionsRequired": "Bedienungshilfen-Berechtigungen erforderlich",
-    "permissionsDescription": "Handy benötigt Bedienungshilfen-Berechtigungen, um transkribierten Text einzugeben.",
+    "permissionsDescription": "Plaudy benötigt Bedienungshilfen-Berechtigungen, um transkribierten Text einzugeben.",
     "openSettings": "Systemeinstellungen öffnen",
     "dismiss": "Schließen"
   },
@@ -603,7 +641,7 @@
   },
   "appLanguage": {
     "title": "Anwendungssprache",
-    "description": "Sprache der Handy-Oberfläche ändern"
+    "description": "Sprache der Plaudy-Oberfläche ändern"
   },
   "overlay": {
     "transcribing": "Transkribiere...",

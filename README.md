@@ -34,7 +34,7 @@ Plaudy refuses the trade-off:
 - 🎙️ **Both sides, natively.** Records your mic **and** the Mac's system audio through the native **CoreAudio Process Tap** (macOS 14.4+). No BlackHole, no virtual devices, no kernel extensions to install.
 - 🗣️ **Who said what.** Real on-device diarization (sherpa-onnx) turns a recording into a **per-speaker timeline** — `Me · 0:04 · "…"` / `Speaker 1 · 0:09 · "…"` — not an anonymous wall of text.
 - 🤖 **Bring your own AI.** Instead of bundling a weak local model, Plaudy exposes your library to **your** AI (Claude / Claude Code) over a local **[MCP](https://modelcontextprotocol.io) server**. Summaries run through the AI *you* already use — the transcript text goes to your Claude (there's no Plaudy cloud in between), while your audio and database stay on the Mac. *(Prefer fully offline? Point the same MCP at a local model — the bridge is model-agnostic.)*
-- 🪄 **Feels like a Mac app.** A menu-bar "graffetta" — the icon becomes an **ear** 👂 the moment it's listening (an honest, always-visible signal). One click to record, or opt-in **auto-capture** that starts on its own when audio plays.
+- 🪄 **Feels like a Mac app.** A menu-bar **ear** 👂 that wakes the moment it's listening (an honest, always-visible signal). One click to record, or opt-in **auto-capture** that starts on its own when audio plays.
 - 🧩 **One native app.** No server process, no Docker, no Python backend. Open it and record.
 
 ---
@@ -94,7 +94,7 @@ bun tauri build                           # … or build Plaudy.app + Plaudy_*.d
 ```
 
 - **First launch:** grant **Microphone** and **Audio Recording** permission (no Screen Recording needed — the Process Tap uses the audio-capture TCC permission, so there's no purple banner).
-- **Record a meeting:** click the menu-bar **graffetta**, or run the app and hit the record hero. Watch the tray icon become an **ear** 👂. Stop, and the speaker-attributed transcript appears in **History**.
+- **Record a meeting:** click the menu-bar **ear** 👂, or run the app and hit the record hero. Watch it wake while recording. Stop, and the speaker-attributed transcript appears in **History**.
 - **Summarize with Claude:** the local MCP server is registered in [`.mcp.json`](.mcp.json) — point Claude / Claude Code at this repo and ask it to summarize or search your sessions.
 - **Tests:** `cd handy/src-tauri && cargo test --lib` → 102 passed · `cd handy/mcp && bun test` → 4 pass.
 

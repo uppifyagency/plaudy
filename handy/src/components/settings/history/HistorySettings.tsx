@@ -95,31 +95,34 @@ export const HistorySettings: React.FC = () => {
     }
   }, []);
 
-  const loadPage = useCallback(async (cursor?: number) => {
-    const isFirstPage = cursor === undefined;
-    if (!isFirstPage && loadingRef.current) return;
-    loadingRef.current = true;
-    if (isFirstPage) setLoading(true);
-    try {
-      const result = await commands.getHistoryEntries(
-        cursor ?? null,
-        PAGE_SIZE,
-      );
-      if (result.status === "ok") {
-        const { entries: newEntries, has_more } = result.data;
-        setEntries((prev) =>
-          isFirstPage ? newEntries : [...prev, ...newEntries],
+  const loadPage = useCallback(
+    async (cursor?: number) => {
+      const isFirstPage = cursor === undefined;
+      if (!isFirstPage && loadingRef.current) return;
+      loadingRef.current = true;
+      if (isFirstPage) setLoading(true);
+      try {
+        const result = await commands.getHistoryEntries(
+          cursor ?? null,
+          PAGE_SIZE,
         );
-        setHasMore(has_more);
-        fetchOverviews(newEntries.map((e) => e.id));
+        if (result.status === "ok") {
+          const { entries: newEntries, has_more } = result.data;
+          setEntries((prev) =>
+            isFirstPage ? newEntries : [...prev, ...newEntries],
+          );
+          setHasMore(has_more);
+          fetchOverviews(newEntries.map((e) => e.id));
+        }
+      } catch (error) {
+        console.error("Failed to load history entries:", error);
+      } finally {
+        setLoading(false);
+        loadingRef.current = false;
       }
-    } catch (error) {
-      console.error("Failed to load history entries:", error);
-    } finally {
-      setLoading(false);
-      loadingRef.current = false;
-    }
-  }, [fetchOverviews]);
+    },
+    [fetchOverviews],
+  );
 
   useEffect(() => {
     loadPage();
@@ -253,9 +256,7 @@ export const HistorySettings: React.FC = () => {
     const prevEntries = entries;
     const prevSearchResults = searchResults;
     setEntries((prev) => prev.filter((e) => e.id !== id));
-    setSearchResults((prev) =>
-      prev ? prev.filter((e) => e.id !== id) : prev,
-    );
+    setSearchResults((prev) => (prev ? prev.filter((e) => e.id !== id) : prev));
     const restore = () => {
       setEntries(prevEntries);
       setSearchResults(prevSearchResults);

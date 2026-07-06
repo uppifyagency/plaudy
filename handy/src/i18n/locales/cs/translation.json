@@ -6,7 +6,9 @@
     "unloadModel": "Uvolnit model",
     "model": "Model",
     "quit": "Ukončit",
-    "cancel": "Zrušit"
+    "cancel": "Zrušit",
+    "startRecording": "Spustit nahrávání",
+    "stopRecording": "Zastavit nahrávání"
   },
   "sidebar": {
     "general": "Obecné",
@@ -15,7 +17,8 @@
     "postProcessing": "Následné zpracování",
     "history": "Historie",
     "debug": "Ladění",
-    "about": "O aplikaci"
+    "about": "O aplikaci",
+    "sessions": "Relace"
   },
   "onboarding": {
     "subtitle": "Pro začátek vyberte model pro přepis",
@@ -100,7 +103,7 @@
     },
     "permissions": {
       "title": "Vyžadována oprávnění",
-      "description": "Handy potřebuje několik oprávnění pro správné fungování.",
+      "description": "Plaudy potřebuje několik oprávnění pro správné fungování.",
       "microphone": {
         "title": "Přístup k mikrofonu",
         "description": "Potřebný pro zachycení vašeho hlasu k přepisu."
@@ -176,7 +179,7 @@
     "general": {
       "title": "Obecné",
       "shortcut": {
-        "title": "Zkratky Handy",
+        "title": "Zkratky Plaudy",
         "description": "Nastavte klávesové zkratky pro spuštění nahrávání řeči na text",
         "loading": "Načítám zkratky...",
         "none": "Žádné zkratky nejsou nastavené",
@@ -276,11 +279,11 @@
       },
       "autostart": {
         "label": "Spouštět při startu",
-        "description": "Automaticky spustit Handy po přihlášení do počítače."
+        "description": "Automaticky spustit Plaudy po přihlášení do počítače."
       },
       "showTrayIcon": {
         "label": "Zobrazit ikonu v systémové liště",
-        "description": "Zobrazit ikonu Handy v systémové liště."
+        "description": "Zobrazit ikonu Plaudy v systémové liště."
       },
       "overlay": {
         "title": "Pozice překryvu",
@@ -431,7 +434,20 @@
       "retranscribe": "Přepsat znovu",
       "retranscribeError": "Opětovný přepis se nezdařil. Zkuste to prosím znovu.",
       "transcribing": "Přepisuji...",
-      "transcriptionFailed": "Přepis selhal. Můžete zkusit přepis znovu pomocí ikony opakování."
+      "transcriptionFailed": "Přepis selhal. Můžete zkusit přepis znovu pomocí ikony opakování.",
+      "noSpeech": "Nebyla rozpoznána žádná řeč",
+      "unknownSpeaker": "Neznámý",
+      "expand": "Zobrazit podrobnosti",
+      "collapse": "Skrýt podrobnosti",
+      "sourceMeeting": "Schůzka",
+      "sourceMic": "Mikrofon",
+      "sourceSystem": "Systémový zvuk",
+      "sourceDictation": "Diktování",
+      "searchPlaceholder": "Hledat nahrávky",
+      "noResults": "Hledání neodpovídá žádná nahrávka",
+      "selectEntry": "Vyberte nahrávku pro zobrazení přepisu",
+      "today": "Dnes",
+      "yesterday": "Včera"
     },
     "debug": {
       "title": "Ladění",
@@ -445,7 +461,7 @@
       },
       "updateChecks": {
         "label": "Kontrolovat aktualizace",
-        "description": "Automaticky kontrolovat nové verze Handy"
+        "description": "Automaticky kontrolovat nové verze Plaudy"
       },
       "soundTheme": {
         "label": "Zvukový motiv",
@@ -513,29 +529,46 @@
       "title": "O aplikaci",
       "version": {
         "title": "Verze",
-        "description": "Aktuální verze Handy"
+        "description": "Aktuální verze Plaudy"
       },
       "appDataDirectory": {
         "title": "Adresář dat aplikace",
-        "description": "Umístění, kde Handy ukládá data"
+        "description": "Umístění, kde Plaudy ukládá data"
       },
       "sourceCode": {
         "title": "Zdrojový kód",
         "description": "Zobrazit zdrojový kód a přispět",
         "button": "Zobrazit na GitHubu"
       },
-      "supportDevelopment": {
-        "title": "Podpořte vývoj",
-        "description": "Pomozte nám pokračovat ve vývoji Handy",
-        "button": "Přispět"
-      },
       "acknowledgments": {
         "title": "Poděkování",
         "whisper": {
           "title": "Whisper.cpp",
           "description": "Vysoce výkonné inferenční zpracování modelu automatického rozpoznávání řeči Whisper od OpenAI",
-          "details": "Handy používá Whisper.cpp pro rychlé lokální zpracování řeči na text. Díky skvělé práci Georgiho Gerganova a přispěvatelů."
+          "details": "Plaudy používá Whisper.cpp pro rychlé lokální zpracování řeči na text. Díky skvělé práci Georgiho Gerganova a přispěvatelů."
         }
+      }
+    },
+    "sessions": {
+      "title": "Mikrofon + systémový zvuk, přepis v zařízení",
+      "description": "Nahrávejte dlouhé záznamy z mikrofonu nebo systémového zvuku tohoto Macu. Po zastavení se záznam přepíše a přidá do Historie.",
+      "sourceLabel": "Zdroj",
+      "sourceMic": "Mikrofon",
+      "sourceSystem": "Systémový zvuk",
+      "start": "Spustit nahrávání",
+      "stop": "Zastavit nahrávání",
+      "recording": "Nahrávání…",
+      "modeMeeting": "Schůzka",
+      "modeMic": "Mikrofon",
+      "modeSystem": "Systémový zvuk",
+      "tapToStart": "Klepnutím nahrajete",
+      "capturingMeeting": "Nahrává se: vy + systémový zvuk",
+      "capturingMic": "Nahrává se mikrofon",
+      "capturingSystem": "Nahrává se systémový zvuk",
+      "privacyNote": "Nahrává mikrofon a zvuk tohoto Macu jako dva proudy, oddělené podle mluvčích. Nic nikdy neopustí váš Mac.",
+      "autoCapture": {
+        "title": "Automatické nahrávání",
+        "description": "Automaticky spustí relaci schůzky, když jiná aplikace přehrává zvuk (hovor, video), a zastaví ji, když nastane ticho. Experimentální — vše zůstává na tomto Macu."
       }
     }
   },
@@ -576,11 +609,16 @@
     "off": "Vypnuto",
     "yes": "Ano",
     "no": "Ne",
-    "noOptionsFound": "Nenalezeny žádné možnosti"
+    "noOptionsFound": "Nenalezeny žádné možnosti",
+    "copy": "Kopírovat",
+    "copyToClipboard": "Zkopírovat do schránky",
+    "notAvailable": "Není k dispozici",
+    "selectOption": "Vyberte možnost...",
+    "previewSoundTheme": "Přehrát ukázku zvukového motivu (start a poté stop)"
   },
   "accessibility": {
     "permissionsRequired": "Vyžadována oprávnění usnadnění přístupu",
-    "permissionsDescription": "Handy potřebuje oprávnění usnadnění přístupu, aby mohlo psát přepsaný text.",
+    "permissionsDescription": "Plaudy potřebuje oprávnění usnadnění přístupu, aby mohlo psát přepsaný text.",
     "openSettings": "Otevřít Nastavení systému",
     "dismiss": "Zavřít"
   },
@@ -603,7 +641,7 @@
   },
   "appLanguage": {
     "title": "Jazyk aplikace",
-    "description": "Změňte jazyk rozhraní Handy"
+    "description": "Změňte jazyk rozhraní Plaudy"
   },
   "overlay": {
     "transcribing": "Přepisuji...",

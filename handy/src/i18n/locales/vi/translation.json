@@ -6,7 +6,9 @@
     "unloadModel": "Dỡ mô hình",
     "model": "Mô hình",
     "quit": "Thoát",
-    "cancel": "Hủy"
+    "cancel": "Hủy",
+    "startRecording": "Bắt đầu ghi âm",
+    "stopRecording": "Dừng ghi âm"
   },
   "sidebar": {
     "general": "Chung",
@@ -15,7 +17,8 @@
     "postProcessing": "Xử lý sau",
     "history": "Lịch sử",
     "debug": "Gỡ lỗi",
-    "about": "Giới thiệu"
+    "about": "Giới thiệu",
+    "sessions": "Phiên"
   },
   "onboarding": {
     "subtitle": "Để bắt đầu, hãy chọn một mô hình chuyển đổi giọng nói",
@@ -100,7 +103,7 @@
     },
     "permissions": {
       "title": "Cần cấp quyền",
-      "description": "Handy cần một số quyền để hoạt động bình thường.",
+      "description": "Plaudy cần một số quyền để hoạt động bình thường.",
       "microphone": {
         "title": "Quyền truy cập Micrô",
         "description": "Cần thiết để nghe giọng nói của bạn để chuyển đổi."
@@ -176,7 +179,7 @@
     "general": {
       "title": "Chung",
       "shortcut": {
-        "title": "Phím tắt Handy",
+        "title": "Phím tắt Plaudy",
         "description": "Cấu hình phím tắt để kích hoạt ghi âm chuyển đổi giọng nói thành văn bản",
         "loading": "Đang tải phím tắt...",
         "none": "Chưa cấu hình phím tắt",
@@ -276,11 +279,11 @@
       },
       "autostart": {
         "label": "Khởi động cùng hệ thống",
-        "description": "Tự động khởi động Handy khi bạn đăng nhập vào máy tính."
+        "description": "Tự động khởi động Plaudy khi bạn đăng nhập vào máy tính."
       },
       "showTrayIcon": {
         "label": "Hiển thị biểu tượng khay",
-        "description": "Hiển thị biểu tượng Handy trong khay hệ thống."
+        "description": "Hiển thị biểu tượng Plaudy trong khay hệ thống."
       },
       "overlay": {
         "title": "Vị trí lớp phủ",
@@ -431,7 +434,20 @@
       "retranscribe": "Phiên âm lại",
       "retranscribeError": "Không thể phiên âm lại. Vui lòng thử lại.",
       "transcribing": "Đang phiên âm...",
-      "transcriptionFailed": "Phiên âm thất bại. Bạn có thể phiên âm lại bằng biểu tượng thử lại."
+      "transcriptionFailed": "Phiên âm thất bại. Bạn có thể phiên âm lại bằng biểu tượng thử lại.",
+      "noSpeech": "Không phát hiện giọng nói",
+      "unknownSpeaker": "Không xác định",
+      "expand": "Hiện chi tiết",
+      "collapse": "Ẩn chi tiết",
+      "sourceMeeting": "Cuộc họp",
+      "sourceMic": "Micrô",
+      "sourceSystem": "Âm thanh hệ thống",
+      "sourceDictation": "Đọc chính tả",
+      "searchPlaceholder": "Tìm kiếm bản ghi",
+      "noResults": "Không có bản ghi nào khớp với tìm kiếm",
+      "selectEntry": "Chọn một bản ghi để xem bản phiên âm",
+      "today": "Hôm nay",
+      "yesterday": "Hôm qua"
     },
     "debug": {
       "title": "Gỡ lỗi",
@@ -445,7 +461,7 @@
       },
       "updateChecks": {
         "label": "Kiểm tra cập nhật",
-        "description": "Tự động kiểm tra phiên bản mới của Handy"
+        "description": "Tự động kiểm tra phiên bản mới của Plaudy"
       },
       "soundTheme": {
         "label": "Chủ đề âm thanh",
@@ -513,29 +529,46 @@
       "title": "Giới thiệu",
       "version": {
         "title": "Phiên bản",
-        "description": "Phiên bản hiện tại của Handy"
+        "description": "Phiên bản hiện tại của Plaudy"
       },
       "appDataDirectory": {
         "title": "Thư mục dữ liệu ứng dụng",
-        "description": "Vị trí Handy lưu trữ dữ liệu"
+        "description": "Vị trí Plaudy lưu trữ dữ liệu"
       },
       "sourceCode": {
         "title": "Mã nguồn",
         "description": "Xem mã nguồn và đóng góp",
         "button": "Xem trên GitHub"
       },
-      "supportDevelopment": {
-        "title": "Hỗ trợ phát triển",
-        "description": "Giúp chúng tôi tiếp tục xây dựng Handy",
-        "button": "Quyên góp"
-      },
       "acknowledgments": {
         "title": "Lời cảm ơn",
         "whisper": {
           "title": "Whisper.cpp",
           "description": "Suy luận hiệu suất cao của mô hình nhận dạng giọng nói tự động Whisper của OpenAI",
-          "details": "Handy sử dụng Whisper.cpp để xử lý chuyển đổi giọng nói thành văn bản nhanh, cục bộ. Cảm ơn công việc tuyệt vời của Georgi Gerganov và các cộng tác viên."
+          "details": "Plaudy sử dụng Whisper.cpp để xử lý chuyển đổi giọng nói thành văn bản nhanh, cục bộ. Cảm ơn công việc tuyệt vời của Georgi Gerganov và các cộng tác viên."
         }
+      }
+    },
+    "sessions": {
+      "title": "Micrô + âm thanh hệ thống, phiên âm ngay trên máy",
+      "description": "Ghi lại bản ghi dài từ micrô hoặc âm thanh hệ thống của máy Mac này. Khi dừng, bản ghi sẽ được phiên âm và thêm vào Lịch sử.",
+      "sourceLabel": "Nguồn",
+      "sourceMic": "Micrô",
+      "sourceSystem": "Âm thanh hệ thống",
+      "start": "Bắt đầu ghi âm",
+      "stop": "Dừng ghi âm",
+      "recording": "Đang ghi âm…",
+      "modeMeeting": "Cuộc họp",
+      "modeMic": "Micrô",
+      "modeSystem": "Âm thanh hệ thống",
+      "tapToStart": "Chạm để ghi âm",
+      "capturingMeeting": "Đang ghi bạn + âm thanh hệ thống",
+      "capturingMic": "Đang ghi micrô",
+      "capturingSystem": "Đang ghi âm thanh hệ thống",
+      "privacyNote": "Ghi micrô và âm thanh của máy Mac này thành hai luồng, tách theo người nói. Không có gì rời khỏi máy Mac của bạn.",
+      "autoCapture": {
+        "title": "Tự động ghi",
+        "description": "Tự động bắt đầu phiên họp khi ứng dụng khác phát âm thanh (cuộc gọi, video) và dừng khi im lặng. Thử nghiệm — mọi thứ đều ở lại trên máy Mac này."
       }
     }
   },
@@ -576,11 +609,16 @@
     "off": "Tắt",
     "yes": "Có",
     "no": "Không",
-    "noOptionsFound": "Không tìm thấy tùy chọn"
+    "noOptionsFound": "Không tìm thấy tùy chọn",
+    "copy": "Sao chép",
+    "copyToClipboard": "Sao chép vào bảng nhớ tạm",
+    "notAvailable": "Không khả dụng",
+    "selectOption": "Chọn một tùy chọn...",
+    "previewSoundTheme": "Nghe thử chủ đề âm thanh (phát âm bắt đầu rồi âm dừng)"
   },
   "accessibility": {
     "permissionsRequired": "Cần quyền truy cập",
-    "permissionsDescription": "Handy cần quyền truy cập để gõ văn bản đã chuyển đổi.",
+    "permissionsDescription": "Plaudy cần quyền truy cập để gõ văn bản đã chuyển đổi.",
     "openSettings": "Mở Cài đặt Hệ thống",
     "dismiss": "Bỏ qua"
   },
@@ -603,7 +641,7 @@
   },
   "appLanguage": {
     "title": "Ngôn ngữ ứng dụng",
-    "description": "Thay đổi ngôn ngữ giao diện của Handy"
+    "description": "Thay đổi ngôn ngữ giao diện của Plaudy"
   },
   "overlay": {
     "transcribing": "Đang chuyển đổi...",
