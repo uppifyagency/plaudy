@@ -2,7 +2,7 @@ import React from "react";
 import { Star } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { HistoryEntry, SessionOverview } from "@/bindings";
-import { isFailed, isTranscribing } from "@/lib/types/history";
+import { isFailed, isSilent, isTranscribing } from "@/lib/types/history";
 import { formatClock } from "@/utils/formatClock";
 import { deriveTitle, inferSource, SOURCE_ICON } from "./useSessionSegments";
 
@@ -26,7 +26,10 @@ export const ListRow: React.FC<{
     i18n.language,
     { hour: "2-digit", minute: "2-digit" },
   );
-  const title = deriveTitle(entry, time);
+  // A silent (completed-but-empty) row reads as "no speech detected", never a bare timestamp.
+  const title = isSilent(entry)
+    ? t("settings.history.noSpeech")
+    : deriveTitle(entry, time);
   const transcribing = isTranscribing(entry);
 
   return (

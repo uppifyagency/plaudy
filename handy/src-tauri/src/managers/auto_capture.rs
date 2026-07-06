@@ -147,6 +147,7 @@ impl AutoCaptureDecider {
 
     /// Whether the decider currently believes a session should be running (capturing or in the
     /// silence grace period). Lets the supervisor reconcile with manual toggles.
+    #[cfg(test)]
     pub fn wants_capture(&self) -> bool {
         matches!(self.phase, Phase::Capturing | Phase::Trailing { .. })
     }
@@ -182,6 +183,15 @@ const PROBATION: Duration = Duration::from_secs(60);
 /// After any auto-session ends (finalized or discarded), stand down this long before sensing
 /// again, so a stale reading right after tap teardown can't immediately re-trigger.
 const COOLDOWN: Duration = Duration::from_secs(8);
+/// Minimum confirmed captured-audio presence before an auto-session is worth a History row. At
+/// the STOP decision, a session that heard less than this is DISCARDED, not finalized — the fix
+/// for the M2 churn (a spurious short sound marks `audio_heard` = true, so the silent-cancel rule
+/// missed it, and 4 s of idle finalized a junk micro-row; audit saw entries 23-25 in 2 minutes).
+/// This is the finalize-side filter: the trigger/debounce/cooldown are deliberately NOT tightened
+/// (the 89-min meeting held together — real churn is spurious triggers, not meeting fragmentation).
+/// ponytail: conscious compromise — a genuine ~7 s exchange is discarded, far cheaper than ~40
+/// junk rows/day. Only real captured loudness counts; a still-muted meeting's open stream does not.
+const MIN_CONTENT: Duration = Duration::from_secs(8);
 
 /// One tick's world snapshot, gathered by the I/O loop. Pure data — this is what makes the
 /// supervisor's decisions unit-testable without CoreAudio or a Tauri AppHandle.
@@ -218,6 +228,7 @@ pub struct SupervisorConfig {
     pub probation: Duration,
     pub cooldown: Duration,
     pub max_tick_dt: Duration,
+    pub min_content: Duration,
 }
 
 impl Default for SupervisorConfig {
@@ -228,6 +239,7 @@ impl Default for SupervisorConfig {
             probation: PROBATION,
             cooldown: COOLDOWN,
             max_tick_dt: MAX_TICK_DT,
+            min_content: MIN_CONTENT,
         }
     }
 }
@@ -244,6 +256,9 @@ pub struct Supervisor {
     started_at: Option<Instant>,
     /// While Some(t) and now < t, stand down (post-session settle).
     cooldown_until: Option<Instant>,
+    /// Total confirmed captured-audio presence for the current owned session (dt-accumulated,
+    /// like the probation/stop clocks). Gates the STOP decision: below `cfg.min_content` → Cancel.
+    heard_secs: Duration,
 }
 
 impl Supervisor {
@@ -254,6 +269,7 @@ impl Supervisor {
             auto_started: false,
             started_at: None,
             cooldown_until: None,
+            heard_secs: Duration::ZERO,
         }
     }
 
@@ -317,7 +333,8 @@ impl Supervisor {
         // while everyone is muted, and that is a *valid* start, not one to discard-and-retrigger
         // every few seconds. Only once audio was actually captured does the captured loudness
         // take over for STOP (an app's open-but-quiet stream can't detect the end of a call).
-        let present = if view.session_active && self.auto_started && view.audio_heard {
+        let captured_branch = view.session_active && self.auto_started && view.audio_heard;
+        let present = if captured_branch {
             view.audio_idle < CAPTURED_IDLE_AS_SILENCE
         } else {
             // Idle, or our session hasn't captured real audio yet: the sensors rule.
@@ -325,13 +342,21 @@ impl Supervisor {
             view.external_output_active || view.mic_voice_active
         };
 
+        // Accrue the session's confirmed captured-audio time — ONLY real captured loudness, never
+        // the external-sensor presence of a still-muted stream. This is the M2 content gate below.
+        if captured_branch && present {
+            self.heard_secs += dt;
+        }
+
         match self.decider.observe(present, dt) {
             AutoAction::StartCapture => (!view.session_active).then_some(Effect::Start),
             AutoAction::StopCapture => {
                 if self.auto_started && view.session_active {
-                    // Never finalize a session in which no real audio was ever captured —
-                    // that would be a junk silence row in History.
-                    if view.audio_heard {
+                    // Only finalize a session that heard ENOUGH real audio to be worth a row.
+                    // Below the floor (the M2 spurious-blip case) OR never heard at all → discard,
+                    // never a junk micro-row in History. `heard_secs` = 0 subsumes the old
+                    // "no audio ever → cancel" rule, so silent false starts still cancel.
+                    if self.heard_secs >= self.cfg.min_content {
                         Some(Effect::Stop)
                     } else {
                         Some(Effect::Cancel)
@@ -353,6 +378,7 @@ impl Supervisor {
         if ok {
             self.auto_started = true;
             self.started_at = Some(now);
+            self.heard_secs = Duration::ZERO; // fresh session — the content counter starts at zero
         } else {
             self.decider.reset();
         }
@@ -377,6 +403,66 @@ impl Supervisor {
             self.started_at = None;
             self.cooldown_until = Some(now + self.cfg.cooldown);
             self.decider.reset();
+        }
+    }
+}
+
+// --- Settings-read resilience (pure) ------------------------------------------------------------
+
+/// What the loop should log after a settings read (kept separate from doing it so it's testable).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsLog {
+    /// Read succeeded on the first try — nothing to say.
+    None,
+    /// First failure of a streak — warn once (don't spam every tick).
+    WarnFailure,
+    /// Read recovered after `n` consecutive failures — note it once.
+    Recovered(u32),
+}
+
+/// Resilience around the per-tick settings read: the store handle can transiently go invalid
+/// (`BadResourceId` when the resource table is cleared at shutdown while this thread still ticks —
+/// see `settings::open_settings_store`). Instead of panicking, reuse the last-known-good copy and
+/// warn only once per failure streak. Pure and generic over the settings type so it unit-tests
+/// without a Tauri store.
+#[derive(Debug)]
+struct SettingsGuard<T> {
+    last_good: Option<T>,
+    fail_streak: u32,
+}
+
+impl<T: Clone> SettingsGuard<T> {
+    fn new() -> Self {
+        Self {
+            last_good: None,
+            fail_streak: 0,
+        }
+    }
+
+    /// Feed the outcome of one read. Returns the settings to use this tick (`None` = no
+    /// known-good yet, skip the tick) and what to log.
+    fn observe(&mut self, read: Result<T, ()>) -> (Option<T>, SettingsLog) {
+        match read {
+            Ok(settings) => {
+                let recovered = self.fail_streak;
+                self.fail_streak = 0;
+                self.last_good = Some(settings.clone());
+                let log = if recovered > 0 {
+                    SettingsLog::Recovered(recovered)
+                } else {
+                    SettingsLog::None
+                };
+                (Some(settings), log)
+            }
+            Err(()) => {
+                self.fail_streak += 1;
+                let log = if self.fail_streak == 1 {
+                    SettingsLog::WarnFailure
+                } else {
+                    SettingsLog::None
+                };
+                (self.last_good.clone(), log)
+            }
         }
     }
 }
@@ -438,6 +524,9 @@ fn supervise(app: &AppHandle, session: &Arc<SessionManager>, owns: &std::sync::a
     let mut last = Instant::now();
     // Diagnostic: log only when a sensor flips, so we can see edges without spam.
     let mut last_present: Option<(bool, bool)> = None;
+    // The settings store handle can transiently go invalid (see SettingsGuard); reuse the last
+    // good copy rather than panicking the tick.
+    let mut settings_guard = SettingsGuard::new();
 
     // The mic trigger's VAD model (bundled resource — same file dictation uses).
     let vad_model = app
@@ -458,7 +547,23 @@ fn supervise(app: &AppHandle, session: &Arc<SessionManager>, owns: &std::sync::a
         let dt = now.duration_since(last);
         last = now;
 
-        let st = settings::get_settings(app);
+        // Fallible read: on a transient store error, degrade to last-known-good (never panic).
+        let read = settings::try_get_settings(app);
+        let (st, log) = settings_guard.observe(read.as_ref().cloned().map_err(|_| ()));
+        match log {
+            SettingsLog::WarnFailure => warn!(
+                "Auto-capture: settings read failed ({}); reusing last-known-good, retrying next tick.",
+                read.as_ref().err().expect("Err implies error present")
+            ),
+            SettingsLog::Recovered(n) => {
+                info!("Auto-capture: settings store readable again after {n} failed tick(s).")
+            }
+            SettingsLog::None => {}
+        }
+        let Some(st) = st else {
+            // No known-good settings yet (store failed on the very first tick) — skip this tick.
+            continue;
+        };
         let enabled = st.auto_capture_enabled;
         let session_active = session.is_active();
 
@@ -658,6 +763,7 @@ mod tests {
             probation: Duration::from_secs(10),
             cooldown: Duration::from_secs(8),
             max_tick_dt: Duration::from_millis(500),
+            min_content: Duration::from_secs(2), // 4 ticks of confirmed audio → worth a row
         }
     }
 
@@ -727,19 +833,32 @@ mod tests {
         );
         sup.after_start(true, t1);
 
-        // My speech marks the clock via the mic track's VAD tap → audio_heard = true.
-        // Once I stop talking long enough, the session FINALIZES (a monologue is a
+        // My speech marks the clock via the mic track's VAD tap → audio_heard = true and the
+        // captured loudness is currently present (audio_idle ≈ 0). Sustained past the content
+        // floor (2 s = 4 ticks here), this is a monologue worth keeping.
+        let speaking = view(true, true, true, IDLE_NONE, false);
+        let mut t = t1;
+        for _ in 0..5 {
+            t += TICK;
+            assert_eq!(sup.tick(&speaking, t, TICK), None);
+        }
+        // Once I stop talking long enough, the session FINALIZES (a real monologue is a
         // recording worth keeping, not a silent junk row).
-        let t2 = t1 + Duration::from_secs(5);
         let quiet = view(true, true, true, IDLE_LONG, false);
-        let mut effect = sup.tick(&quiet, t2, TICK);
-        let mut t = t2;
+        let mut effect = None;
         while effect.is_none() {
             t += TICK;
-            assert!(t < t2 + Duration::from_secs(10), "must stop within stop_after");
+            assert!(
+                t < t1 + Duration::from_secs(20),
+                "must stop within stop_after"
+            );
             effect = sup.tick(&quiet, t, TICK);
         }
-        assert_eq!(effect, Some(Effect::Stop), "a heard session finalizes, never cancels");
+        assert_eq!(
+            effect,
+            Some(Effect::Stop),
+            "a heard session finalizes, never cancels"
+        );
     }
 
     #[test]
@@ -752,7 +871,11 @@ mod tests {
         let (mut sup, t_start) = started_supervisor();
         let never_heard = view(true, true, false, IDLE_LONG, true);
         let before = t_start + Duration::from_secs(9);
-        assert_eq!(sup.tick(&never_heard, before, TICK), None, "probation still running");
+        assert_eq!(
+            sup.tick(&never_heard, before, TICK),
+            None,
+            "probation still running"
+        );
         let after = t_start + Duration::from_secs(10);
         assert_eq!(
             sup.tick(&never_heard, after, TICK),
@@ -801,13 +924,16 @@ mod tests {
     #[test]
     fn real_meeting_end_finalizes_the_session() {
         let (mut sup, t_start) = started_supervisor();
-        // Real audio arrives → presence switches to the captured level.
+        // Real audio arrives → presence switches to the captured level. Sustain it past the
+        // content floor (2 s = 4 ticks here) so the session is worth a History row.
         let talking = view(true, true, true, IDLE_NONE, true);
-        assert_eq!(sup.tick(&talking, t_start + TICK, TICK), None);
+        for i in 1..=5 {
+            assert_eq!(sup.tick(&talking, t_start + TICK * i, TICK), None);
+        }
         // Call ends: captured audio idle far beyond the 800 ms threshold.
         let quiet = view(true, true, true, IDLE_LONG, true);
         let mut effect = None;
-        for i in 2..=9 {
+        for i in 6..=14 {
             effect = sup.tick(&quiet, t_start + TICK * i, TICK);
             if effect.is_some() {
                 break;
@@ -816,7 +942,65 @@ mod tests {
         assert_eq!(
             effect,
             Some(Effect::Stop),
-            "a session with real audio is finalized, not discarded"
+            "a session with enough real audio is finalized, not discarded"
+        );
+    }
+
+    #[test]
+    fn below_threshold_content_is_cancelled_not_finalized() {
+        // THE M2 churn bug: a spurious short sound marks `audio_heard` = true (so the old
+        // silent-cancel rule missed it), then 4 s of idle fired StopCapture and finalized a junk
+        // micro-row. Now a session that heard LESS than the content floor is discarded instead.
+        let (mut sup, t_start) = started_supervisor();
+        // A brief real sound: a single tick of captured presence (0.5 s < the 2 s floor).
+        let blip = view(true, true, true, IDLE_NONE, true);
+        assert_eq!(sup.tick(&blip, t_start + TICK, TICK), None);
+        // Then quiet → the STOP window elapses.
+        let quiet = view(true, true, true, IDLE_LONG, true);
+        let mut effect = None;
+        for i in 2..=10 {
+            effect = sup.tick(&quiet, t_start + TICK * i, TICK);
+            if effect.is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            effect,
+            Some(Effect::Cancel),
+            "too little real audio → discard, never a junk History row"
+        );
+    }
+
+    #[test]
+    fn content_counter_resets_between_sessions() {
+        // Session 1 accumulates plenty of content and finalizes.
+        let (mut sup, t_start) = started_supervisor();
+        let talking = view(true, true, true, IDLE_NONE, true);
+        for i in 1..=5 {
+            sup.tick(&talking, t_start + TICK * i, TICK);
+        }
+        sup.after_stop(t_start + TICK * 6);
+
+        // A fresh auto-session with only a brief blip must NOT inherit session 1's credit.
+        let t = t_start + Duration::from_secs(20); // past the cooldown
+        let idle_ext = view(true, false, false, IDLE_LONG, true);
+        assert_eq!(sup.tick(&idle_ext, t, TICK), None); // arming
+        assert_eq!(sup.tick(&idle_ext, t + TICK, TICK), Some(Effect::Start));
+        sup.after_start(true, t + TICK);
+        let blip = view(true, true, true, IDLE_NONE, true);
+        assert_eq!(sup.tick(&blip, t + TICK * 2, TICK), None); // 0.5 s only
+        let quiet = view(true, true, true, IDLE_LONG, true);
+        let mut effect = None;
+        for i in 3..=11 {
+            effect = sup.tick(&quiet, t + TICK * i, TICK);
+            if effect.is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            effect,
+            Some(Effect::Cancel),
+            "session 2's content counter must start at zero, not inherit session 1"
         );
     }
 
@@ -908,5 +1092,47 @@ mod tests {
             sup.tick(&noisy_idle, t0 + TICK * 3, TICK),
             Some(Effect::Start)
         );
+    }
+
+    // --- SettingsGuard (per-tick settings-read resilience) ---------------------------------
+
+    #[test]
+    fn settings_read_success_is_used_and_cached_silently() {
+        let mut g = SettingsGuard::new();
+        let (used, log) = g.observe(Ok(7));
+        assert_eq!(used, Some(7));
+        assert_eq!(log, SettingsLog::None);
+    }
+
+    #[test]
+    fn a_transient_failure_falls_back_to_last_known_good_and_warns_once() {
+        let mut g = SettingsGuard::new();
+        assert_eq!(g.observe(Ok(7)), (Some(7), SettingsLog::None));
+        // First failure: reuse the last good value (7) and warn exactly once.
+        assert_eq!(g.observe(Err(())), (Some(7), SettingsLog::WarnFailure));
+        // Continued failures: still last-known-good, but NO more warnings (throttled).
+        assert_eq!(g.observe(Err(())), (Some(7), SettingsLog::None));
+        assert_eq!(g.observe(Err(())), (Some(7), SettingsLog::None));
+    }
+
+    #[test]
+    fn recovery_after_a_failure_streak_is_noted_once_then_goes_quiet() {
+        let mut g = SettingsGuard::new();
+        g.observe(Ok(7));
+        g.observe(Err(())); // streak = 1
+        g.observe(Err(())); // streak = 2
+                            // Recovery reports how many ticks were lost, then a fresh success is silent again.
+        assert_eq!(g.observe(Ok(9)), (Some(9), SettingsLog::Recovered(2)));
+        assert_eq!(g.observe(Ok(9)), (Some(9), SettingsLog::None));
+        // A new failure re-arms the one-shot warning.
+        assert_eq!(g.observe(Err(())), (Some(9), SettingsLog::WarnFailure));
+    }
+
+    #[test]
+    fn failure_before_any_success_skips_the_tick_without_panicking() {
+        let mut g: SettingsGuard<i32> = SettingsGuard::new();
+        // No known-good yet: the loop must skip (None) rather than act on nothing — and warn once.
+        assert_eq!(g.observe(Err(())), (None, SettingsLog::WarnFailure));
+        assert_eq!(g.observe(Err(())), (None, SettingsLog::None));
     }
 }

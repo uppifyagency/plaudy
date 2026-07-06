@@ -860,11 +860,21 @@ impl AppSettings {
     }
 }
 
+/// The single place that opens the settings store. It is fallible on purpose: `app.store(..)` can
+/// return `Tauri(BadResourceId)` when the plugin's cached `path → ResourceId` points at a resource
+/// that has been removed from the app resource table (e.g. `App::cleanup_before_exit` clears it at
+/// shutdown while a background thread is still running). Callers on the main / command threads still
+/// `.expect` it — the store is valid there — but the auto-capture supervisor uses `try_get_settings`
+/// so a transient invalid handle degrades to last-known-good instead of panicking every tick.
+fn open_settings_store(
+    app: &AppHandle,
+) -> tauri_plugin_store::Result<std::sync::Arc<tauri_plugin_store::Store<tauri::Wry>>> {
+    app.store(crate::portable::store_path(SETTINGS_STORE_PATH))
+}
+
 pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     // Initialize store
-    let store = app
-        .store(crate::portable::store_path(SETTINGS_STORE_PATH))
-        .expect("Failed to initialize store");
+    let store = open_settings_store(app).expect("Failed to initialize store");
 
     let mut settings = if let Some(settings_value) = store.get("settings") {
         // Parse the entire settings object
@@ -911,10 +921,12 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     settings
 }
 
-pub fn get_settings(app: &AppHandle) -> AppSettings {
-    let store = app
-        .store(crate::portable::store_path(SETTINGS_STORE_PATH))
-        .expect("Failed to initialize store");
+/// Fallible settings read. Returns `Err` instead of panicking when the store resource is
+/// transiently invalid (see [`open_settings_store`]). Prefer this from any thread that must not
+/// die on a store hiccup (the auto-capture supervisor); `get_settings` is the panicking wrapper
+/// kept for the many call sites that run where the store is always valid.
+pub fn try_get_settings(app: &AppHandle) -> tauri_plugin_store::Result<AppSettings> {
+    let store = open_settings_store(app)?;
 
     let mut settings = if let Some(settings_value) = store.get("settings") {
         serde_json::from_value::<AppSettings>(settings_value).unwrap_or_else(|_| {
@@ -932,13 +944,15 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
         store.set("settings", serde_json::to_value(&settings).unwrap());
     }
 
-    settings
+    Ok(settings)
+}
+
+pub fn get_settings(app: &AppHandle) -> AppSettings {
+    try_get_settings(app).expect("Failed to initialize store")
 }
 
 pub fn write_settings(app: &AppHandle, settings: AppSettings) {
-    let store = app
-        .store(crate::portable::store_path(SETTINGS_STORE_PATH))
-        .expect("Failed to initialize store");
+    let store = open_settings_store(app).expect("Failed to initialize store");
 
     store.set("settings", serde_json::to_value(&settings).unwrap());
 }

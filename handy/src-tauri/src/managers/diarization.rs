@@ -185,6 +185,15 @@ pub fn drop_bleed(segments: Vec<TimedSegment>, mic_label: &str) -> Vec<TimedSegm
 pub struct DiarizationManager {
     seg_model: std::path::PathBuf,
     emb_model: std::path::PathBuf,
+    /// Window-boundary cancellation flag, checked between diarization windows (C2). Tripping it
+    /// aborts a long diarization mid-way, returning the speaker turns stitched so far.
+    ///
+    /// ponytail: the flag is the cancellation SEAM the windowed design requires; no caller
+    /// reaches an in-flight finalize to set it yet — `SessionManager::cancel` targets the ACTIVE
+    /// session, not its later off-thread finalize. A "cancel finalize" UI command or an app-quit
+    /// hook that trips this (switch the field to `Arc<AtomicBool>` and expose a handle) is the
+    /// upgrade path; the per-window progress log already turns the old silent hang observable.
+    cancel: std::sync::atomic::AtomicBool,
 }
 
 impl DiarizationManager {
@@ -203,6 +212,7 @@ impl DiarizationManager {
         Self {
             seg_model: dir.join(Self::SEG_FILE),
             emb_model: dir.join(Self::EMB_FILE),
+            cancel: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -213,9 +223,18 @@ impl DiarizationManager {
 
     /// Diarize 16 kHz mono `samples` into speaker turns (ms). Returns an empty Vec when the
     /// models are absent or the engine fails — [`align`] then degrades to "unknown speaker".
+    ///
+    /// A track longer than [`DIAR_WINDOW_THRESHOLD_SECS`] is diarized in overlapping windows
+    /// (C2): sherpa feeds the WHOLE input to one `process()` call, whose clustering allocates an
+    /// O(n²) pairwise matrix (~hundreds of MB at 89 min, GBs at 3 h → OOM) and whose 10 s/1 s
+    /// segmentation inferences every sample ten times (an 89-min track ≈ 15 h of inference → a
+    /// CPU-pegged silent hang). Windowing bounds both; the engine is built ONCE and reused across
+    /// windows (a fresh `create()` reloads both ONNX models). Shorter tracks keep the whole-track
+    /// path unchanged.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub fn diarize(&self, samples: &[f32]) -> Vec<SpeakerTurn> {
         use sherpa_onnx::{OfflineSpeakerDiarization, OfflineSpeakerDiarizationConfig};
+        use std::sync::atomic::Ordering;
 
         if !self.is_available() {
             return Vec::new();
@@ -228,18 +247,58 @@ impl DiarizationManager {
             log::warn!("diarization: failed to load models, skipping");
             return Vec::new();
         };
-        let Some(result) = diarizer.process(samples) else {
-            return Vec::new();
+
+        let sr = crate::audio_toolkit::constants::WHISPER_SAMPLE_RATE as usize;
+        let idx_to_ms = |idx: usize| (idx as f64 / sr as f64 * 1000.0) as i64;
+        // Run one waveform slice through the (shared) engine → speaker turns in slice-local ms.
+        let run = |slice: &[f32]| -> Vec<SpeakerTurn> {
+            diarizer
+                .process(slice)
+                .map(|r| {
+                    r.sort_by_start_time()
+                        .into_iter()
+                        .map(|s| SpeakerTurn {
+                            start_ms: (s.start as f64 * 1000.0) as i64,
+                            end_ms: (s.end as f64 * 1000.0) as i64,
+                            speaker: s.speaker as i64,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
         };
-        result
-            .sort_by_start_time()
-            .into_iter()
-            .map(|s| SpeakerTurn {
-                start_ms: (s.start as f64 * 1000.0) as i64,
-                end_ms: (s.end as f64 * 1000.0) as i64,
-                speaker: s.speaker as i64,
-            })
-            .collect()
+
+        let windows = plan_windows(samples, sr);
+        if windows.len() == 1 {
+            return run(samples); // whole-track path (short recording), unchanged
+        }
+
+        let n = windows.len();
+        let mut diar_windows: Vec<DiarWindow> = Vec::with_capacity(n);
+        for (i, &(start, end)) in windows.iter().enumerate() {
+            if self.cancel.load(Ordering::Relaxed) {
+                log::warn!("diarization: cancelled at window {}/{}", i + 1, n);
+                break;
+            }
+            let offset_ms = idx_to_ms(start);
+            let mut turns = run(&samples[start..end]);
+            for t in &mut turns {
+                t.start_ms += offset_ms;
+                t.end_ms += offset_ms;
+            }
+            log::info!(
+                "diarization: window {}/{} ({:.0}%) → {} turns",
+                i + 1,
+                n,
+                (i + 1) as f32 / n as f32 * 100.0,
+                turns.len()
+            );
+            diar_windows.push(DiarWindow {
+                start_ms: offset_ms,
+                end_ms: idx_to_ms(end),
+                turns,
+            });
+        }
+        stitch_windows(diar_windows)
     }
 
     /// Non-macOS-aarch64 stub: diarization engine not built for this target (mirrors how the
@@ -248,6 +307,159 @@ impl DiarizationManager {
     pub fn diarize(&self, _samples: &[f32]) -> Vec<SpeakerTurn> {
         Vec::new()
     }
+}
+
+// --- windowed diarization: the PURE planning + stitching core (C2), unit-tested without ONNX --
+
+/// A track at or under this length is diarized whole (the original path): its clustering matrix
+/// is still small (~17 MB at 20 min) and single-pass gives the best label quality. Longer tracks
+/// are windowed. Picked at the low end of the 20–30 min band so the O(n²) clustering allocation
+/// and the per-sample-×10 segmentation inference are bounded before they hurt.
+const DIAR_WINDOW_THRESHOLD_SECS: usize = 20 * 60;
+/// Target length of each diarization window once a track is split. 10 min caps a window's
+/// clustering matrix at a few MB and gives a cancel/progress checkpoint every ~10 min of audio,
+/// while keeping the number of stitch seams (hence stitch error) low.
+const DIAR_WINDOW_TARGET_SECS: usize = 10 * 60;
+/// Quiet-cut search slack and trailing-remainder fold, mirroring the ASR chunker's shape.
+const DIAR_WINDOW_SLACK_SECS: usize = 15;
+const DIAR_WINDOW_MIN_TAIL_SECS: usize = 60;
+/// Adjacent windows share this much audio. The shared region is where the two windows'
+/// independent clusterings are matched (see [`stitch_windows`]); 45 s is wide enough that a
+/// speaker turn straddling the boundary is seen by both windows for a reliable label match.
+const DIAR_WINDOW_OVERLAP_SECS: usize = 45;
+
+/// Plan the diarization windows for a track of `samples` at `sample_rate`. At or under
+/// [`DIAR_WINDOW_THRESHOLD_SECS`] → one whole-track window (the unchanged path). Longer →
+/// overlapping windows whose boundaries are cut at quiet points (reusing the ASR chunker) and
+/// whose starts are pulled back by [`DIAR_WINDOW_OVERLAP_SECS`] so each adjacent pair shares an
+/// overlap region for stitching. Returned as `[start, end)` sample indices, ordered, covering
+/// the input.
+fn plan_windows(samples: &[f32], sample_rate: usize) -> Vec<(usize, usize)> {
+    if samples.len() <= DIAR_WINDOW_THRESHOLD_SECS * sample_rate {
+        return vec![(0, samples.len())];
+    }
+    let overlap = DIAR_WINDOW_OVERLAP_SECS * sample_rate;
+    crate::managers::transcription::chunk_spans_with(
+        samples,
+        sample_rate,
+        DIAR_WINDOW_TARGET_SECS,
+        DIAR_WINDOW_SLACK_SECS,
+        DIAR_WINDOW_MIN_TAIL_SECS,
+    )
+    .into_iter()
+    .enumerate()
+    .map(|(i, (s, e))| {
+        if i == 0 {
+            (s, e)
+        } else {
+            (s.saturating_sub(overlap), e)
+        }
+    })
+    .collect()
+}
+
+/// One window's diarization output for stitching: its span on the shared timeline (ms) and its
+/// speaker turns (already offset to global ms, but with window-LOCAL speaker ids that must be
+/// remapped onto the running global numbering).
+struct DiarWindow {
+    start_ms: i64,
+    end_ms: i64,
+    turns: Vec<SpeakerTurn>,
+}
+
+/// Stitch per-window diarization into one global speaker numbering. Each window was clustered
+/// independently, so its speaker ids are local; adjacent windows share an overlap region and a
+/// window's local speaker is mapped to the previous window's global speaker it overlaps most
+/// within that region (majority vote by overlap ms, greedy so two locals never collapse into one
+/// global). A local speaker with no match — someone who only starts talking later — gets a fresh
+/// global id. Each window contributes only the turns past the previous window's end (the overlap
+/// region is already covered), a straddling turn clipped to the seam, so coverage is contiguous
+/// with no duplication.
+///
+/// ponytail: overlap-vote stitching is the accepted compromise. sherpa's Rust API exposes only
+/// `{start, end, speaker}` per segment — no cluster embeddings — so a speaker who goes silent
+/// across a whole window boundary can be handed a new id (the same person split in two).
+/// Cross-window embedding similarity is the upgrade path IF the bindings ever expose the vectors;
+/// imperfect boundary stitching is accepted here over the whole-track OOM/hang it replaces.
+fn stitch_windows(windows: Vec<DiarWindow>) -> Vec<SpeakerTurn> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut out: Vec<SpeakerTurn> = Vec::new();
+    let mut next_global: i64 = 0;
+    let mut prev_end: Option<i64> = None;
+
+    for w in windows {
+        let mut remap: HashMap<i64, i64> = HashMap::new();
+
+        if let Some(seam) = prev_end {
+            // Vote each local speaker against the already-global turns within the shared region
+            // [this window's start, previous window's end].
+            let (ov_start, ov_end) = (w.start_ms, seam);
+            let mut votes: HashMap<i64, HashMap<i64, i64>> = HashMap::new();
+            for t in &w.turns {
+                let ts = t.start_ms.max(ov_start);
+                let te = t.end_ms.min(ov_end);
+                if te <= ts {
+                    continue;
+                }
+                for p in &out {
+                    let ov = overlap_ms(ts, te, p.start_ms, p.end_ms);
+                    if ov > 0 {
+                        *votes
+                            .entry(t.speaker)
+                            .or_default()
+                            .entry(p.speaker)
+                            .or_default() += ov;
+                    }
+                }
+            }
+            // Greedy assignment: strongest (local, global) vote first, each global claimed once.
+            let mut ranked: Vec<(i64, i64, i64)> = Vec::new(); // (score, local, global)
+            for (local, gmap) in &votes {
+                for (global, score) in gmap {
+                    ranked.push((*score, *local, *global));
+                }
+            }
+            ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+            let mut claimed: HashSet<i64> = HashSet::new();
+            for (_score, local, global) in ranked {
+                if remap.contains_key(&local) || claimed.contains(&global) {
+                    continue;
+                }
+                remap.insert(local, global);
+                claimed.insert(global);
+            }
+        }
+
+        // Unmatched local speakers (all of window 0's, plus any newcomer) get fresh global ids,
+        // assigned in id order so the numbering is deterministic.
+        let mut locals: Vec<i64> = w.turns.iter().map(|t| t.speaker).collect();
+        locals.sort_unstable();
+        locals.dedup();
+        for l in locals {
+            remap.entry(l).or_insert_with(|| {
+                let id = next_global;
+                next_global += 1;
+                id
+            });
+        }
+
+        // Emit remapped turns past the seam; clip a straddling turn's start so the previous
+        // window's coverage of the overlap region is not duplicated.
+        for t in &w.turns {
+            let start = prev_end.map_or(t.start_ms, |s| t.start_ms.max(s));
+            if t.end_ms <= start {
+                continue;
+            }
+            out.push(SpeakerTurn {
+                start_ms: start,
+                end_ms: t.end_ms,
+                speaker: remap[&t.speaker],
+            });
+        }
+        prev_end = Some(w.end_ms);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -460,6 +672,177 @@ mod tests {
                 out[1].text.as_str()
             ),
             (1000, 2000, Some(1), "b")
+        );
+    }
+
+    // --- windowed diarization: plan_windows (C2) --------------------------------------------
+    // Tiny sample rate keeps the vectors small; plan_windows only does arithmetic on it.
+    const WSR: usize = 10;
+    const THRESH: usize = DIAR_WINDOW_THRESHOLD_SECS * WSR;
+
+    #[test]
+    fn short_track_is_a_single_whole_track_window() {
+        // Under threshold, and EXACTLY at threshold (`<=`): the unchanged whole-track path.
+        let under = vec![0.5f32; THRESH - WSR];
+        assert_eq!(plan_windows(&under, WSR), vec![(0, under.len())]);
+        let exact = vec![0.5f32; THRESH];
+        assert_eq!(plan_windows(&exact, WSR), vec![(0, exact.len())]);
+    }
+
+    #[test]
+    fn empty_track_is_a_single_empty_window() {
+        assert_eq!(plan_windows(&[], WSR), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn long_track_splits_into_overlapping_windows_covering_the_input() {
+        let audio = vec![0.5f32; THRESH * 2]; // well past threshold
+        let windows = plan_windows(&audio, WSR);
+        assert!(windows.len() > 1, "a track past threshold must split");
+        assert_eq!(windows.first().unwrap().0, 0, "first window starts at 0");
+        assert_eq!(
+            windows.last().unwrap().1,
+            audio.len(),
+            "last covers the tail"
+        );
+        let overlap = DIAR_WINDOW_OVERLAP_SECS * WSR;
+        for w in windows.windows(2) {
+            assert!(w[0].1 <= w[1].1 && w[0].0 <= w[0].1, "ordered, valid spans");
+            // Each non-first window starts before the previous window's end → they overlap,
+            // by exactly the configured overlap (the pulled-back quiet-cut boundary).
+            assert!(
+                w[1].0 < w[0].1,
+                "adjacent windows must overlap for stitching"
+            );
+            assert_eq!(
+                w[0].1 - w[1].0,
+                overlap as usize,
+                "overlap is the configured width"
+            );
+        }
+    }
+
+    #[test]
+    fn all_loud_audio_still_windows_without_panic() {
+        // No quiet pockets to cut on — the chunker falls back to the ideal boundary; planning
+        // must still produce overlapping windows and never panic.
+        let audio = vec![1.0f32; THRESH * 2];
+        let windows = plan_windows(&audio, WSR);
+        assert!(windows.len() > 1);
+        assert_eq!(windows.last().unwrap().1, audio.len());
+    }
+
+    // --- windowed diarization: stitch_windows (C2) ------------------------------------------
+    fn dwin(start_ms: i64, end_ms: i64, turns: Vec<SpeakerTurn>) -> DiarWindow {
+        DiarWindow {
+            start_ms,
+            end_ms,
+            turns,
+        }
+    }
+
+    #[test]
+    fn stitch_of_a_single_window_renumbers_from_zero() {
+        let out = stitch_windows(vec![dwin(
+            0,
+            2000,
+            vec![turn(0, 1000, 3), turn(1000, 2000, 7)],
+        )]);
+        // Local ids 3,7 → dense global 0,1 in id order; timing/order preserved.
+        assert_eq!(out.len(), 2);
+        assert_eq!((out[0].start_ms, out[0].speaker), (0, 0));
+        assert_eq!((out[1].start_ms, out[1].speaker), (1000, 1));
+    }
+
+    #[test]
+    fn stitch_of_no_windows_is_empty() {
+        assert!(stitch_windows(vec![]).is_empty());
+    }
+
+    #[test]
+    fn same_speaker_across_the_overlap_keeps_one_global_id() {
+        // Window 0: Alice (local 0) speaks [0,1000], window ends at 1000.
+        // Window 1: starts at 500 (overlap [500,1000]); Alice is clustered as local 1 here and
+        // continues past the seam, plus Bob (local 0) starts only after the seam.
+        let out = stitch_windows(vec![
+            dwin(0, 1000, vec![turn(0, 1000, 0)]),
+            dwin(500, 2000, vec![turn(500, 1200, 1), turn(1200, 2000, 0)]),
+        ]);
+        // Alice keeps global 0 across both windows; Bob is a new, distinct id.
+        // [0,1000] Alice(0) from w0, [1000,1200] Alice(0) from w1, [1200,2000] Bob from w1.
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].speaker, 0);
+        assert_eq!(
+            out[1].speaker, 0,
+            "Alice's overlap-mapped id survives the seam"
+        );
+        assert_ne!(out[2].speaker, out[0].speaker, "Bob is a distinct speaker");
+    }
+
+    #[test]
+    fn newcomer_only_in_the_second_window_gets_a_fresh_id() {
+        // Window 1's only speaker never appears in the overlap region → fresh global id, no panic.
+        let out = stitch_windows(vec![
+            dwin(0, 1000, vec![turn(0, 1000, 0)]),
+            dwin(500, 2000, vec![turn(1000, 2000, 0)]),
+        ]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].speaker, 0);
+        assert_ne!(out[1].speaker, out[0].speaker);
+    }
+
+    #[test]
+    fn windows_with_no_shared_speakers_dont_panic() {
+        // Empty overlap voting on both sides — every local id is fresh; must not panic.
+        let out = stitch_windows(vec![
+            dwin(0, 1000, vec![turn(0, 500, 0)]),
+            dwin(500, 2000, vec![turn(1500, 2000, 0)]),
+        ]);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn two_local_speakers_never_collapse_into_one_global() {
+        // Both of window 1's speakers overlap the SAME previous global 0, one more strongly.
+        // The stronger claims global 0; the weaker must get a fresh id, not reuse 0.
+        let out = stitch_windows(vec![
+            dwin(0, 1000, vec![turn(0, 1000, 0)]),
+            dwin(
+                500,
+                2000,
+                vec![turn(500, 1500, 0), turn(800, 1600, 1)], // strong then weak overlap
+            ),
+        ]);
+        // Past the seam: local 0 → global 0 (kept), local 1 → a distinct fresh id.
+        let past_seam: Vec<i64> = out
+            .iter()
+            .filter(|t| t.start_ms >= 1000)
+            .map(|t| t.speaker)
+            .collect();
+        assert_eq!(past_seam.len(), 2);
+        assert!(
+            past_seam.contains(&0),
+            "the stronger-overlap local keeps global 0"
+        );
+        assert!(
+            past_seam.iter().any(|&s| s != 0),
+            "the weaker-overlap local gets a distinct id, never reusing 0"
+        );
+    }
+
+    #[test]
+    fn three_windows_remap_one_speaker_consistently() {
+        // One speaker persists across three independently-clustered windows under different local
+        // ids (0, 2, 5); the global id must be stable the whole way through.
+        let out = stitch_windows(vec![
+            dwin(0, 1000, vec![turn(0, 1000, 0)]),
+            dwin(500, 2000, vec![turn(500, 1500, 2)]),
+            dwin(1200, 2500, vec![turn(1200, 2500, 5)]),
+        ]);
+        assert!(!out.is_empty());
+        assert!(
+            out.iter().all(|t| t.speaker == 0),
+            "the single speaker keeps one global id across all three windows: {out:?}"
         );
     }
 }

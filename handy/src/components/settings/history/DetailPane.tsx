@@ -165,7 +165,7 @@ export const DetailPane: React.FC<{
           </IconButton>
           <IconButton
             onClick={handleRetranscribe}
-            disabled={retrying}
+            disabled={transcribing}
             title={t("settings.history.retranscribe")}
           >
             <RotateCcw

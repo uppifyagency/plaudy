@@ -33,6 +33,10 @@ impl MicVoiceSensor {
     pub fn start(vad_model: &Path) -> Result<Self, String> {
         let mut vad = SileroVad::new(vad_model, TRIGGER_THRESHOLD)
             .map_err(|e| format!("mic sensor VAD: {e}"))?;
+        // Unbounded chunk-sink channel (same backpressure limitation as the recorder/session
+        // capture channels): a stalled VAD consumer would queue audio silently, and std::mpsc has
+        // no depth probe. The consumer only runs Silero on ~30 ms hops and keeps up; kept unbounded
+        // so a full buffer can never drop a frame mid-utterance and miss a trigger.
         let (tx, rx) = mpsc::channel::<Vec<f32>>();
         let mut recorder = AudioRecorder::new()
             .map_err(|e| format!("mic sensor recorder: {e}"))?

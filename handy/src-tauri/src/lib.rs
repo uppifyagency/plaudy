@@ -225,12 +225,71 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     }
 
     // Self-healing on startup: first heal any row stuck in `transcribing` (a finalize that
-    // died with a previous process), then re-finalize any orphan PCM whose process died
-    // mid-recording. Order matters: heal the stale rows before recovery adds fresh ones.
+    // died with a previous process). This runs synchronously, before recovery, so the stale
+    // rows are healed before recovery adds fresh ones.
     if let Err(e) = history_manager.fail_stale_transcribing() {
         log::warn!("Failed to heal stale transcribing sessions: {e}");
     }
-    session_manager.recover_interrupted();
+
+    // Recovery + transcript heal run together on ONE background thread, in sequence, off the
+    // setup thread so startup itself is never blocked.
+    //
+    //   1. Recovery re-finalizes orphan PCMs whose process died mid-recording — SERIALLY (see
+    //      SessionManager::recover_interrupted). A thread-per-session boot storm would hold
+    //      (N+1)× full-audio buffers (~350 MB each) and N diarization runtimes at the worst
+    //      possible moment; serial recovery peaks at 1× and, because the inference gate
+    //      already serializes ASR, costs no extra wall-clock.
+    //   2. The transcript heal runs AFTER recovery so a freshly recovered row is never
+    //      contended by the heal (M4's CAS guards correctness regardless — this just avoids
+    //      the conflict entirely). It re-transcribes rows left `failed` with an EMPTY
+    //      transcript but a live WAV (the audio was never lost — only its transcription was),
+    //      oldest first. Sequential on purpose: the inference gate serializes engine runs
+    //      anyway, and one row at a time keeps memory flat. `retryable_entry_ids` is semantic:
+    //      a silent row is retried at most ONCE (it then becomes terminal `Done`, not
+    //      `failed`), and rows whose recording is gone are never picked — so this pass no
+    //      longer re-decodes the same silent recording at every launch (bug A1).
+    {
+        let sm_for_recovery = session_manager.clone();
+        let app_for_heal = app_handle.clone();
+        let hm_for_heal = history_manager.clone();
+        let tm_for_heal = transcription_manager.clone();
+        std::thread::spawn(move || {
+            sm_for_recovery.recover_interrupted();
+
+            tauri::async_runtime::block_on(async move {
+                let ids = match hm_for_heal.retryable_entry_ids() {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        log::warn!("Startup transcript heal: listing failed rows failed: {e}");
+                        return;
+                    }
+                };
+                if ids.is_empty() {
+                    return;
+                }
+                log::info!(
+                    "Startup transcript heal: retrying {} failed row(s) in the background",
+                    ids.len()
+                );
+                for id in ids {
+                    match commands::history::retry_entry_transcription(
+                        &app_for_heal,
+                        &hm_for_heal,
+                        &tm_for_heal,
+                        id,
+                    )
+                    .await
+                    {
+                        Ok(()) => log::info!("Startup transcript heal: entry {id} transcribed."),
+                        Err(e) => {
+                            log::warn!("Startup transcript heal: entry {id} still failed: {e}")
+                        }
+                    }
+                }
+                log::info!("Startup transcript heal: done.");
+            });
+        });
+    }
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command

@@ -197,8 +197,43 @@ pub struct SessionOverview {
 /// Free function over `&mut Connection` (not a manager method) so it is unit-testable against
 /// an in-memory database without a Tauri `AppHandle`.
 fn write_segments(conn: &mut Connection, history_id: i64, segments: &[TimedSegment]) -> Result<()> {
-    use std::collections::{BTreeMap, HashMap};
     let tx = conn.transaction()?;
+    insert_segments(&tx, history_id, segments)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// A3 consistency invariant: REPLACE an entry's persisted speaker timeline in one transaction —
+/// delete the old segments and their speakers, then insert the new ones (an empty `segments`
+/// slice is the purge case). The retry path must go through this, never bare inserts: segments
+/// persisted by an earlier, partially-failed finalize would otherwise sit next to — and
+/// contradict — the freshly re-transcribed text. Atomic, so a crash mid-replace can never leave
+/// the old and new timelines interleaved.
+fn replace_segments_conn(
+    conn: &mut Connection,
+    history_id: i64,
+    segments: &[TimedSegment],
+) -> Result<()> {
+    let tx = conn.transaction()?;
+    // Segments first (their speaker_id FK is ON DELETE SET NULL, so the reverse order would
+    // silently NULL them instead of failing — this order leaves nothing to orphan).
+    tx.execute(
+        "DELETE FROM transcription_segments WHERE history_id = ?1",
+        params![history_id],
+    )?;
+    tx.execute(
+        "DELETE FROM speakers WHERE history_id = ?1",
+        params![history_id],
+    )?;
+    insert_segments(&tx, history_id, segments)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// The shared insert body of [`write_segments`] / [`replace_segments_conn`], running inside the
+/// caller's transaction.
+fn insert_segments(tx: &Connection, history_id: i64, segments: &[TimedSegment]) -> Result<()> {
+    use std::collections::{BTreeMap, HashMap};
     // Two independent speaker namespaces sharing one `speakers` table:
     //  - explicit names (e.g. the dual-stream mic track "Me") deduped by the label string;
     //  - diarizer indices deduped by local id and surfaced as "Speaker N" in first-seen order.
@@ -242,7 +277,6 @@ fn write_segments(conn: &mut Connection, history_id: i64, segments: &[TimedSegme
             params![history_id, db_speaker, seg.start_ms, seg.end_ms, &seg.text],
         )?;
     }
-    tx.commit()?;
     Ok(())
 }
 
@@ -266,6 +300,32 @@ fn read_segments(conn: &Connection, history_id: i64) -> Result<Vec<PersistedSegm
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// Ids the AUTOMATIC startup heal may retry: rows still `failed` with an empty transcript whose
+/// WAV is still on disk. Semantic (retryable), not symptomatic (failed+empty). Three states are
+/// deliberately NOT returned so the heal never re-runs full inference on them at every launch:
+///  - `Done` silent rows — "no speech" is a completed, terminal outcome (bug A1);
+///  - rows that failed but kept a partial transcript — left to the user's explicit retry;
+///  - rows whose recording is gone — unrecoverable; auto-retrying only re-fails each boot.
+/// Oldest first. Free function over a borrowed connection + dir so the retryable/terminal
+/// boundary is unit-testable without an AppHandle. Manual retry via the UI still works on any row.
+fn retryable_ids(conn: &Connection, recordings_dir: &std::path::Path) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, file_name FROM transcription_history
+         WHERE status = 'failed' AND transcription_text = ''
+         ORDER BY id ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<(i64, String)>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|(_, file_name)| recordings_dir.join(file_name).exists())
+        .map(|(id, _)| id)
+        .collect())
 }
 
 /// Flip every row still marked `transcribing` to `failed`. Used once at startup: such a row
@@ -346,6 +406,83 @@ mod segment_persistence_tests {
         assert!(HistoryManager::search_entries_conn(&conn, "_", 10)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn replace_segments_swaps_the_old_timeline_for_the_new_one() {
+        // A3: a meeting row healed by retry — the old (possibly contradictory) "Me"/"Speaker 1"
+        // timeline from a partially-failed finalize must be gone, replaced by the re-diarized one.
+        let mut conn = in_memory_db();
+        write_segments(
+            &mut conn,
+            1,
+            &[
+                labeled(0, 1000, "Me", "old mic text"),
+                seg(1000, 2000, Some(0), "old system text"),
+            ],
+        )
+        .unwrap();
+
+        replace_segments_conn(
+            &mut conn,
+            1,
+            &[
+                seg(0, 900, Some(0), "hello"),
+                seg(900, 1800, Some(1), "world"),
+            ],
+        )
+        .unwrap();
+
+        let got = read_segments(&conn, 1).unwrap();
+        assert_eq!(got.len(), 2, "only the new timeline remains");
+        assert_eq!(got[0].text, "hello");
+        assert_eq!(got[0].speaker_label.as_deref(), Some("Speaker 1"));
+        assert_eq!(got[1].speaker_label.as_deref(), Some("Speaker 2"));
+        // The stale speaker ROWS are gone too, not just their segments — otherwise the
+        // overviews query would keep listing a phantom "Me" chip forever.
+        let speakers: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM speakers WHERE history_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(speakers, 2);
+    }
+
+    #[test]
+    fn replace_segments_with_empty_purges_the_stale_timeline() {
+        // A flat retry (mic row, or diarization unavailable): honest = text only, no timeline.
+        let mut conn = in_memory_db();
+        write_segments(&mut conn, 1, &[labeled(0, 1000, "Me", "stale")]).unwrap();
+
+        replace_segments_conn(&mut conn, 1, &[]).unwrap();
+
+        assert!(read_segments(&conn, 1).unwrap().is_empty());
+        let speakers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM speakers", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(speakers, 0);
+    }
+
+    #[test]
+    fn replace_segments_leaves_other_entries_untouched() {
+        let mut conn = in_memory_db();
+        conn.execute(
+            "INSERT INTO transcription_history (file_name, timestamp, saved, title, transcription_text)
+             VALUES ('other.wav', 1, 0, 't2', 'x')",
+            [],
+        )
+        .unwrap();
+        write_segments(&mut conn, 1, &[labeled(0, 500, "Me", "mine")]).unwrap();
+        write_segments(&mut conn, 2, &[seg(0, 500, Some(0), "theirs")]).unwrap();
+
+        replace_segments_conn(&mut conn, 1, &[]).unwrap();
+
+        assert!(read_segments(&conn, 1).unwrap().is_empty());
+        let other = read_segments(&conn, 2).unwrap();
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].text, "theirs");
     }
 
     #[test]
@@ -829,6 +966,13 @@ impl HistoryManager {
         write_segments(&mut conn, history_id, segments)
     }
 
+    /// Atomically replace (or, with an empty slice, purge) an entry's persisted speaker
+    /// timeline — the retry path's consistency invariant. See [`replace_segments_conn`].
+    pub fn replace_segments(&self, history_id: i64, segments: &[TimedSegment]) -> Result<()> {
+        let mut conn = self.get_connection()?;
+        replace_segments_conn(&mut conn, history_id, segments)
+    }
+
     /// Read the speaker-attributed segments for a history entry (for the timeline UI).
     pub fn get_segments(&self, history_id: i64) -> Result<Vec<PersistedSegment>> {
         let conn = self.get_connection()?;
@@ -966,6 +1110,83 @@ impl HistoryManager {
             Self::map_history_entry,
         )?;
         Ok(entry)
+    }
+
+    /// M4 single-flight CAS on a borrowed connection (unit-testable without an AppHandle):
+    /// claim a row for a retry run by flipping it to `transcribing`, but ONLY if it isn't
+    /// already `transcribing`. The status column IS the mutex — a double-clicked retry, or a
+    /// manual retry racing the startup heal on the same row, both hit this: exactly one wins
+    /// (`Ok(true)`), the loser gets `Ok(false)` and must never load audio or start a second
+    /// inference run. A `failed` row (the heal's target) and a finished `done` row (a user
+    /// re-transcribing a completed recording) can both be claimed; only an in-flight
+    /// `transcribing` row is refused — the guard is on the actual in-progress state rather than
+    /// on a single source status, so it can't wedge legitimate re-transcription while still
+    /// guaranteeing single flight. A missing row also yields `Ok(false)` (0 rows affected).
+    fn begin_retry_conn(conn: &Connection, id: i64) -> Result<bool> {
+        Ok(conn.execute(
+            "UPDATE transcription_history SET status = 'transcribing'
+             WHERE id = ?1 AND status != 'transcribing'",
+            params![id],
+        )? == 1)
+    }
+
+    /// Try to claim a history row for a retry run (M4 single-flight). Returns the claimed entry
+    /// on success, `None` when the row is already `transcribing` (or gone). On a successful claim
+    /// it emits `Updated` so EVERY view shows `transcribing` while the (slow) inference runs —
+    /// no longer a stale `failed` in other panes. A crash mid-retry leaves the row
+    /// `transcribing`; the startup `fail_stale_transcribing` pass collects it, so no bespoke
+    /// recovery is needed here.
+    pub fn try_begin_retry(&self, id: i64) -> Result<Option<HistoryEntry>> {
+        let conn = self.get_connection()?;
+        if !Self::begin_retry_conn(&conn, id)? {
+            return Ok(None);
+        }
+        let entry = conn.query_row(
+            &format!(
+                "SELECT {} FROM transcription_history WHERE id = ?1",
+                Self::HISTORY_COLUMNS
+            ),
+            params![id],
+            Self::map_history_entry,
+        )?;
+        self.emit_updated(&entry);
+        Ok(Some(entry))
+    }
+
+    /// Return a claimed-but-failed retry to `failed` (retryable again), STATUS ONLY so the
+    /// row's existing transcript/timeline is preserved. Emits `Updated`. A no-op if the row
+    /// vanished mid-retry (deleted): the `WHERE id` UPDATE simply matches nothing, so the row
+    /// is never resurrected.
+    pub fn mark_retry_failed(&self, id: i64) -> Result<()> {
+        let conn = self.get_connection()?;
+        let updated = conn.execute(
+            "UPDATE transcription_history SET status = 'failed' WHERE id = ?1",
+            params![id],
+        )?;
+        if updated == 1 {
+            let entry = conn.query_row(
+                &format!(
+                    "SELECT {} FROM transcription_history WHERE id = ?1",
+                    Self::HISTORY_COLUMNS
+                ),
+                params![id],
+                Self::map_history_entry,
+            )?;
+            self.emit_updated(&entry);
+        }
+        Ok(())
+    }
+
+    /// Emit the `Updated` history event; a failed emit is logged, never fatal (the DB write
+    /// already succeeded — the UI just misses one live refresh).
+    fn emit_updated(&self, entry: &HistoryEntry) {
+        if let Err(e) = (HistoryUpdatePayload::Updated {
+            entry: entry.clone(),
+        })
+        .emit(&self.app_handle)
+        {
+            error!("Failed to emit history-updated event: {}", e);
+        }
     }
 
     pub fn cleanup_old_entries(&self) -> Result<()> {
@@ -1229,6 +1450,27 @@ impl HistoryManager {
         Ok(entry)
     }
 
+    /// Does a history row already point at this recording file? Recovery uses it to tell an
+    /// already-persisted session (row exists → just clean up the PCM) from an orphaned archive
+    /// (WAV written but the crash beat the row → adopt it). A DB error is surfaced, never
+    /// swallowed as "no row" — the caller must not fabricate a duplicate on a transient failure.
+    pub fn entry_exists_for_file(&self, file_name: &str) -> Result<bool> {
+        let conn = self.get_connection()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM transcription_history WHERE file_name = ?1",
+            [file_name],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Ids the startup heal may retry — see the [`retryable_ids`] free function for the exact
+    /// retryable/terminal boundary. Wraps it with this manager's recordings directory.
+    pub fn retryable_entry_ids(&self) -> Result<Vec<i64>> {
+        let conn = self.get_connection()?;
+        retryable_ids(&conn, &self.recordings_dir)
+    }
+
     pub fn delete_entry(&self, id: i64) -> Result<()> {
         let conn = self.get_connection()?;
 
@@ -1460,6 +1702,132 @@ mod tests {
             vec![1],
             "saved rows are exempt; timestamp == cutoff survives (strict <)"
         );
+    }
+
+    /// Insert a row with explicit file name, status and transcript — the axes `retryable_ids`
+    /// discriminates on.
+    fn insert_row(conn: &Connection, file_name: &str, status: &str, text: &str) {
+        conn.execute(
+            "INSERT INTO transcription_history (file_name, timestamp, saved, title, transcription_text, status)
+             VALUES (?1, 0, 0, 't', ?2, ?3)",
+            params![file_name, text, status],
+        )
+        .expect("insert row");
+    }
+
+    #[test]
+    fn retryable_ids_selects_only_recoverable_failed_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = setup_conn();
+
+        // 1: failed+empty, WAV present  → retryable (the genuine "transcription was lost" case).
+        insert_row(&conn, "present.wav", "failed", "");
+        std::fs::write(dir.path().join("present.wav"), b"x").unwrap();
+        // 2: done+empty  → terminal silence (bug A1); never re-inferred.
+        insert_row(&conn, "silent.wav", "done", "");
+        std::fs::write(dir.path().join("silent.wav"), b"x").unwrap();
+        // 3: failed but kept a partial transcript → left to the user's explicit retry.
+        insert_row(&conn, "partial.wav", "failed", "half a sentence");
+        std::fs::write(dir.path().join("partial.wav"), b"x").unwrap();
+        // 4: failed+empty but recording is GONE → unrecoverable; must not loop every boot.
+        insert_row(&conn, "gone.wav", "failed", "");
+        // 5: still transcribing → not a failure at all.
+        insert_row(&conn, "live.wav", "transcribing", "");
+        std::fs::write(dir.path().join("live.wav"), b"x").unwrap();
+
+        let ids = retryable_ids(&conn, dir.path()).unwrap();
+        assert_eq!(
+            ids,
+            vec![1],
+            "only the failed+empty row with a live WAV is retryable"
+        );
+    }
+
+    #[test]
+    fn silence_marked_done_drops_out_of_the_retry_selector() {
+        // The A1 loop closes end-to-end: a failed+empty silent row is retryable exactly once;
+        // once the retry marks it `Done` (what commands::history does for an empty transcript),
+        // it is no longer selected.
+        let dir = tempfile::tempdir().unwrap();
+        let conn = setup_conn();
+        insert_row(&conn, "s.wav", "failed", "");
+        std::fs::write(dir.path().join("s.wav"), b"x").unwrap();
+        assert_eq!(retryable_ids(&conn, dir.path()).unwrap(), vec![1]);
+
+        HistoryManager::update_transcription_conn(
+            &conn,
+            1,
+            String::new(),
+            None,
+            None,
+            TranscriptionStatus::Done,
+        )
+        .unwrap();
+
+        assert!(
+            retryable_ids(&conn, dir.path()).unwrap().is_empty(),
+            "a completed silent row is terminal — never auto-retried again"
+        );
+    }
+
+    #[test]
+    fn begin_retry_cas_claims_a_failed_row_exactly_once() {
+        // M4: the status column is the mutex. First claim wins and flips the row to
+        // `transcribing`; a second claim (double-click, or heal racing a manual retry) is
+        // refused — so a full inference run + full-audio Vec never happens twice.
+        let conn = setup_conn();
+        insert_row(&conn, "r.wav", "failed", "");
+
+        assert!(HistoryManager::begin_retry_conn(&conn, 1).unwrap());
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM transcription_history WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "transcribing");
+
+        assert!(
+            !HistoryManager::begin_retry_conn(&conn, 1).unwrap(),
+            "a second claim while transcribing must lose the CAS"
+        );
+    }
+
+    #[test]
+    fn a_failed_retry_returns_to_failed_and_can_be_claimed_again() {
+        // M4 point 3: a transient failure reverts the row to `failed` (status only), which is
+        // claimable once more — a failed retry never wedges the row out of the retry path.
+        let conn = setup_conn();
+        insert_row(&conn, "r.wav", "failed", "");
+        assert!(HistoryManager::begin_retry_conn(&conn, 1).unwrap());
+
+        // The `mark_retry_failed` revert path (status only).
+        conn.execute(
+            "UPDATE transcription_history SET status = 'failed' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+
+        assert!(HistoryManager::begin_retry_conn(&conn, 1).unwrap());
+    }
+
+    #[test]
+    fn begin_retry_allows_re_transcribing_a_done_row_but_never_an_in_flight_one() {
+        // The guard is on the in-progress state, not the source status: a finished row can be
+        // re-transcribed (e.g. after enabling diarization), yet an in-flight row is still
+        // refused — single flight holds either way.
+        let conn = setup_conn();
+        insert_row(&conn, "d.wav", "done", "final text");
+
+        assert!(HistoryManager::begin_retry_conn(&conn, 1).unwrap());
+        assert!(!HistoryManager::begin_retry_conn(&conn, 1).unwrap());
+    }
+
+    #[test]
+    fn begin_retry_on_a_missing_row_is_refused() {
+        let conn = setup_conn();
+        assert!(!HistoryManager::begin_retry_conn(&conn, 42).unwrap());
     }
 
     #[test]

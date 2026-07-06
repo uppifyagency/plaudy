@@ -20,6 +20,9 @@ pub struct ModelStateEvent {
 /// RAII guard that is a no-op in the mock — mirrors the real `LoadingGuard`.
 pub struct LoadingGuard;
 
+/// No-op mock of the real `InferenceReservation` (the model-switch engine gate).
+pub struct InferenceReservation;
+
 #[derive(Clone)]
 pub struct TranscriptionManager {
     #[allow(dead_code)]
@@ -39,6 +42,10 @@ impl TranscriptionManager {
 
     pub fn try_start_loading(&self) -> Option<LoadingGuard> {
         Some(LoadingGuard)
+    }
+
+    pub fn try_reserve_for_switch(&self) -> Option<InferenceReservation> {
+        Some(InferenceReservation)
     }
 
     pub fn unload_model(&self) -> Result<()> {

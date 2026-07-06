@@ -25,7 +25,7 @@
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::audio_toolkit::audio::SystemAudioRecorder;
-use crate::audio_toolkit::{save_wav_file, AudioRecorder};
+use crate::audio_toolkit::AudioRecorder;
 use crate::managers::diarization::{
     align, drop_bleed, label_segments, merge_segments, AsrSegment, DiarizationManager, TimedSegment,
 };
@@ -551,6 +551,13 @@ impl SessionManager {
     /// Orphan PCMs are grouped by session id so a dual-stream crash comes back as ONE
     /// session (mic labelled "Me"), and a PCM whose WAV already exists is only cleaned up —
     /// re-finalizing it would duplicate the history row (see [`plan_recovery`]).
+    ///
+    /// BLOCKING and SEQUENTIAL by design: it finalizes crashed sessions one at a time on the
+    /// caller's thread, never a thread per session. A parallel recovery at boot would hold
+    /// (N+1)× full-audio buffers (~350 MB each) and N diarization runtimes at once — the worst
+    /// possible moment. Serial recovery peaks at 1×; total latency is unchanged because the
+    /// inference gate already serializes the ASR runs. Call it off the setup thread (see
+    /// `lib.rs`) so startup itself is not blocked.
     pub fn recover_interrupted(&self) {
         let Ok(entries) = fs::read_dir(&self.recordings_dir) else {
             return;
@@ -561,7 +568,18 @@ impl SessionManager {
             .filter(|p| p.to_string_lossy().ends_with(PCM_SUFFIX))
             .collect();
 
-        for plan in plan_recovery(pcms, |wav| wav.exists()) {
+        let hm = self.app.state::<Arc<HistoryManager>>();
+        // A DB error while probing for a row must NOT be read as "no row" — that would fabricate
+        // a duplicate. Treat an errored probe as "row exists" so we fall back to the safe
+        // cleanup-only path (never an adopt) and leave the audio for a later, healthy run.
+        let row_exists = |wav: &Path| {
+            wav.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .map(|name| hm.entry_exists_for_file(&name).unwrap_or(true))
+                .unwrap_or(true)
+        };
+
+        for plan in plan_recovery(pcms, |wav| wav.exists(), row_exists) {
             match plan {
                 RecoveryPlan::CleanupArchived(pcm) => {
                     info!(
@@ -570,14 +588,58 @@ impl SessionManager {
                     );
                     let _ = fs::remove_file(&pcm);
                 }
+                RecoveryPlan::AdoptOrphanArchive {
+                    pcms,
+                    wav_path,
+                    source,
+                } => {
+                    warn!(
+                        "Recovery: {} archived but no history row → adopting as retryable",
+                        wav_path.display()
+                    );
+                    match wav_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                    {
+                        Some(file_name) => {
+                            match hm.save_pending_entry(file_name, source) {
+                                Ok(entry) => {
+                                    // Failed + empty transcript = the standard retryable state; the
+                                    // audio is in the WAV, so the retry rebuilds the rest on demand.
+                                    if let Err(e) = hm.update_transcription(
+                                        entry.id,
+                                        String::new(),
+                                        None,
+                                        None,
+                                        TranscriptionStatus::Failed,
+                                    ) {
+                                        error!("Recovery: failed to mark adopted orphan retryable: {e}");
+                                    }
+                                    for pcm in &pcms {
+                                        let _ = fs::remove_file(pcm);
+                                    }
+                                }
+                                // Leave the PCMs on disk so a future healthy run retries the adopt.
+                                Err(e) => error!(
+                                    "Recovery: failed to adopt orphan {}: {e}",
+                                    wav_path.display()
+                                ),
+                            }
+                        }
+                        None => error!(
+                            "Recovery: orphan WAV path has no file name: {}",
+                            wav_path.display()
+                        ),
+                    }
+                }
                 RecoveryPlan::Refinalize { tracks, wav_path } => {
                     warn!("Recovering interrupted session → {}", wav_path.display());
-                    let app = self.app.clone();
-                    std::thread::spawn(move || {
-                        if let Err(e) = finalize_session(&app, &tracks, &wav_path) {
-                            error!("Recovery failed for {}: {e}", wav_path.display());
-                        }
-                    });
+                    // Serial, in-line: one finalize at a time so RAM peaks at 1× (see the
+                    // method doc). Each carries its own error — a failed row heals via
+                    // `fail_stale_transcribing` + the History retry affordance.
+                    if let Err(e) = finalize_session(&self.app, &tracks, &wav_path) {
+                        error!("Recovery failed for {}: {e}", wav_path.display());
+                    }
                 }
             }
         }
@@ -587,10 +649,20 @@ impl SessionManager {
 /// One recovery decision for a crashed session's leftovers.
 #[derive(Debug)]
 enum RecoveryPlan {
-    /// The PCM's WAV already exists: the audio was archived before the crash. Only remove
-    /// the PCM — re-finalizing would insert a second history row for the same recording.
-    /// The row itself is healed by `fail_stale_transcribing` + the History retry affordance.
+    /// The PCM's WAV exists AND a history row points at it: the session was fully persisted
+    /// before the crash. Only remove the PCM — re-finalizing would insert a second row for the
+    /// same recording. The row itself is healed by `fail_stale_transcribing` + the retry.
     CleanupArchived(PathBuf),
+    /// The WAV exists but NO history row points at it: the crash landed in the finalize window
+    /// between archiving the audio (`stream_mix_to_wav`) and writing the row (`save_pending_entry`),
+    /// leaving audio no one can see. Adopt it: create a retryable `Failed` row for the WAV, then
+    /// remove the PCMs (the retry rebuilds transcript + segments from the WAV on demand). `source`
+    /// is inferred from the PCM name(s) — dual ⇒ Meeting, else mic/system.
+    AdoptOrphanArchive {
+        pcms: Vec<PathBuf>,
+        wav_path: PathBuf,
+        source: EntrySource,
+    },
     /// No WAV yet: finalize these tracks as one session (a dual-stream crash yields two
     /// PCMs with the same session id — they must come back as ONE session, mic first so
     /// the "Me" labelling applies, not as two unrelated recordings).
@@ -600,11 +672,33 @@ enum RecoveryPlan {
     },
 }
 
+/// Which capture path an orphaned archive came from, inferred from its PCM name(s) — the
+/// recovery-side twin of [`entry_source_for`] (which reads `ArchivedTrack`s); dual ⇒ Meeting.
+fn orphan_source(pcms: &[PathBuf]) -> EntrySource {
+    if pcms.len() > 1 {
+        EntrySource::Meeting
+    } else {
+        match pcms
+            .first()
+            .map(|p| Source::from_pcm_name(&p.to_string_lossy()))
+        {
+            Some(Source::SystemAudio) => EntrySource::System,
+            _ => EntrySource::Mic,
+        }
+    }
+}
+
 /// Pure recovery planning over the orphan PCM list — unit-testable without a filesystem
-/// scan (`wav_exists` is injected). Groups by session id: the filename stem up to the first
-/// `.` (`session-<millis>-<seq>`), which both `.mic.`/`.system.` dual names and legacy
-/// single-track names share. Lead offsets are unknown across a crash → 0.
-fn plan_recovery(pcms: Vec<PathBuf>, wav_exists: impl Fn(&Path) -> bool) -> Vec<RecoveryPlan> {
+/// scan (`wav_exists` and `row_exists` are injected). Groups by session id: the filename stem
+/// up to the first `.` (`session-<millis>-<seq>`), which both `.mic.`/`.system.` dual names and
+/// legacy single-track names share. Lead offsets are unknown across a crash → 0. `row_exists`
+/// is keyed on the session's WAV path so an archived-but-rowless session (a crash in the
+/// finalize window) is adopted rather than silently cleaned up into an invisible orphan.
+fn plan_recovery(
+    pcms: Vec<PathBuf>,
+    wav_exists: impl Fn(&Path) -> bool,
+    row_exists: impl Fn(&Path) -> bool,
+) -> Vec<RecoveryPlan> {
     use std::collections::BTreeMap;
 
     // BTreeMap for deterministic plan order (stable logs and tests).
@@ -628,7 +722,17 @@ fn plan_recovery(pcms: Vec<PathBuf>, wav_exists: impl Fn(&Path) -> bool) -> Vec<
             .unwrap_or_else(|| Path::new(""))
             .join(format!("{id}.wav"));
         if wav_exists(&wav_path) {
-            plans.extend(group.into_iter().map(RecoveryPlan::CleanupArchived));
+            if row_exists(&wav_path) {
+                plans.extend(group.into_iter().map(RecoveryPlan::CleanupArchived));
+            } else {
+                // Audio archived but the row never landed — adopt it as one retryable session.
+                let source = orphan_source(&group);
+                plans.push(RecoveryPlan::AdoptOrphanArchive {
+                    pcms: group,
+                    wav_path,
+                    source,
+                });
+            }
             continue;
         }
         // Mic first: track order is the merge tie-break, and dual labelling expects it.
@@ -695,6 +799,10 @@ fn build_track(
     on_writer_fail: impl FnOnce() + Send + 'static,
 ) -> Result<Track> {
     let pcm_path = dir.join(format!("{id}.{}{PCM_SUFFIX}", source.suffix()));
+    // Unbounded consumer → PCM-writer channel. Backpressure limitation (same as the recorder's
+    // sample channel): a stalled writer thread queues audio silently. std::mpsc has no depth
+    // probe; the writer is a simple disk append that keeps up, so we accept it rather than switch
+    // to a bounded channel (which would risk dropping capture — the semantics are live-validated).
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
     let recorder = build_recorder(source, tx)?;
     // Stamp the capture start as close to the recorder's first frame as we can observe —
@@ -795,13 +903,16 @@ fn write_pcm_stream(
 /// The slice of the transcription manager finalize needs — a seam (Stubs for Queries) so the
 /// persist stage is unit-testable without loading a real ASR model.
 pub(crate) trait Transcriber {
-    fn is_model_loaded(&self) -> bool;
+    /// Get a model resident (loading one on demand if needed) and report whether
+    /// transcription can proceed. Finalize must never fail a row just because the idle
+    /// unloader happened to have evicted the model a moment earlier.
+    fn ensure_model_ready(&self) -> bool;
     fn transcribe_with_segments(&self, samples: Vec<f32>) -> Result<(String, Vec<AsrSegment>)>;
 }
 
 impl Transcriber for TranscriptionManager {
-    fn is_model_loaded(&self) -> bool {
-        TranscriptionManager::is_model_loaded(self)
+    fn ensure_model_ready(&self) -> bool {
+        TranscriptionManager::ensure_model_ready(self)
     }
     fn transcribe_with_segments(&self, samples: Vec<f32>) -> Result<(String, Vec<AsrSegment>)> {
         TranscriptionManager::transcribe_with_segments(self, samples)
@@ -905,13 +1016,13 @@ fn persist_session(
         .to_string();
     let entry = hm.save_pending_entry(file_name, entry_source_for(archived))?;
 
-    // Transcribe only when a model is resident: recovery runs at startup before any model
-    // loads, and `transcribe` would otherwise block on the load condvar. A missing transcript
-    // never costs the recording — the audio is already saved. The row is marked Failed (not
-    // Done): Done would present as "recorded silence" and hide the History retry affordance,
-    // which is exactly how the user re-runs transcription once a model is available.
-    if !tm.is_model_loaded() {
-        warn!("No transcription model loaded; session audio saved, transcript pending retry");
+    // Get a model resident, loading it on demand — the idle unloader means "not loaded right
+    // now" is the NORMAL state when a session finalizes, not an error (every auto-captured
+    // session used to fail here). Only when no model can load (none selected/downloaded) does
+    // the row go Failed — a missing transcript never costs the recording, the audio is already
+    // in the WAV, and Failed (not Done) keeps the History retry affordance visible.
+    if !tm.ensure_model_ready() {
+        warn!("No transcription model available; session audio saved, transcript pending retry");
         hm.update_transcription(entry.id, String::new(), TranscriptionStatus::Failed)?;
         return Ok(());
     }
@@ -929,7 +1040,7 @@ fn persist_session(
         }
     }
     let transcript = flat_transcript(&merged, &full_texts);
-    let status = resolve_status(&transcript, &merged, any_error);
+    let status = resolve_status(any_error);
     hm.update_transcription(entry.id, transcript, status)?;
 
     info!("Session finalized → {}", wav_path.display());
@@ -945,20 +1056,12 @@ fn transcribe_tracks(
     diarizer: &DiarizationManager,
     archived: &[ArchivedTrack],
 ) -> (Vec<Vec<TimedSegment>>, Vec<String>, bool) {
-    let dual = archived.len() > 1;
     let mut full_texts: Vec<String> = Vec::new();
     let mut track_segments: Vec<Vec<TimedSegment>> = Vec::new();
     let mut any_error = false;
 
     for track in archived {
         let samples = match read_pcm_i16(&track.pcm) {
-            // Prepend the lead silence so ASR timestamps land on the shared timeline
-            // (`merge_segments` / `drop_bleed`'s overlap window depend on it).
-            Ok(raw) if track.lead_samples > 0 => {
-                let mut padded = vec![0.0f32; track.lead_samples];
-                padded.extend(raw);
-                padded
-            }
             Ok(raw) => raw,
             Err(e) => {
                 // Its audio is already in the WAV; the History retry can re-transcribe.
@@ -971,9 +1074,11 @@ fn transcribe_tracks(
             }
         };
 
-        // The mic track of a dual session is a single known voice ("Me"); everything else is
-        // diarized. Diarize before transcription consumes `samples`.
-        let label_as_me = dual && matches!(track.source, Source::Mic);
+        // A mic track is a single known voice ("Me") — the dual-session mic AND a solo mic
+        // recording alike — so it is labelled, never diarized: a 90-min solo dictation must not
+        // pay sherpa's whole-track diarization cost for one known speaker (C2). Everything else
+        // (system audio) is diarized. Diarize before transcription consumes `samples`.
+        let label_as_me = matches!(track.source, Source::Mic);
         let turns = if label_as_me {
             Vec::new()
         } else {
@@ -984,11 +1089,18 @@ fn transcribe_tracks(
                 if !text.trim().is_empty() {
                     full_texts.push(text);
                 }
-                track_segments.push(if label_as_me {
+                // M3: the lead silence is metadata, not data. Diarizer turns and ASR segments
+                // both come back in the same track-local frame (both engines ran on the raw
+                // samples), so one arithmetic shift of the aligned result lands them on the
+                // shared timeline — identical timestamps to the old physically-prepended
+                // zeros, without copying a multi-hour buffer to represent an offset.
+                let mut segments = if label_as_me {
                     label_segments(&asr, MIC_LABEL)
                 } else {
                     align(&asr, &turns)
-                });
+                };
+                shift_segments(&mut segments, lead_ms(track.lead_samples));
+                track_segments.push(segments);
             }
             Err(e) => {
                 warn!("Session track {:?} transcription failed: {e}", track.source);
@@ -997,6 +1109,28 @@ fn transcribe_tracks(
         }
     }
     (track_segments, full_texts, any_error)
+}
+
+/// Duration of a track's lead silence in ms — the shift that places its segments on the shared
+/// session timeline. Equal by construction to the `lead_silence_ms` this was derived from
+/// (`lead_samples = lead_silence_ms * WHISPER_SAMPLE_RATE / 1000`), so it exactly reproduces the
+/// old physical pad's offset.
+fn lead_ms(lead_samples: usize) -> i64 {
+    use crate::audio_toolkit::constants::WHISPER_SAMPLE_RATE;
+    lead_samples as i64 * 1000 / WHISPER_SAMPLE_RATE as i64
+}
+
+/// Move every segment forward by the track's lead (M3): the pure-arithmetic replacement for
+/// prepending `lead_samples` zeros to the engine input. A zero lead (the session's first track)
+/// is a no-op.
+fn shift_segments(segments: &mut [TimedSegment], lead_ms: i64) {
+    if lead_ms == 0 {
+        return;
+    }
+    for s in segments {
+        s.start_ms += lead_ms;
+        s.end_ms += lead_ms;
+    }
 }
 
 /// Build the flat transcript from the de-duped timeline when segments exist (so the bleed
@@ -1014,17 +1148,15 @@ fn flat_transcript(merged: &[TimedSegment], full_texts: &[String]) -> String {
     }
 }
 
-/// ponytail (accepted degradation): in a multi-track meeting, a single track erroring (rare —
-/// same model + machine for both) yields a partial transcript still marked `Done` rather than
-/// `Failed`. We keep the partial content visible instead of hiding it; the mixed WAV holds
-/// both sides, so the History retry re-transcribes the whole recording if the user wants it.
-/// Only a session where *everything* failed and nothing was produced becomes `Failed`.
-fn resolve_status(
-    transcript: &str,
-    merged: &[TimedSegment],
-    any_error: bool,
-) -> TranscriptionStatus {
-    if transcript.trim().is_empty() && merged.is_empty() && any_error {
+/// Dual-track fail-fast honesty (C1): a session where ANY track's transcription errored is
+/// marked `Failed`, never `Done`. A meeting that silently lost half its speakers must not read
+/// as a completed transcript — the earlier "partial is Done" policy hid exactly that. The
+/// partial transcript AND its segments are still persisted (visible in History) and the audio
+/// is safe in the mixed WAV, so the History retry can re-transcribe the whole recording; only
+/// the status flips so the retry affordance stays visible. A clean run (no per-track error) is
+/// `Done` — including a silence-only session that produced no text but errored on nothing.
+fn resolve_status(any_error: bool) -> TranscriptionStatus {
+    if any_error {
         TranscriptionStatus::Failed
     } else {
         TranscriptionStatus::Done
@@ -1036,8 +1168,9 @@ fn resolve_status(
 /// every readable track was empty (silence — discard; those PCMs are removed here).
 ///
 /// Alignment: a track that started `lead_silence_ms` after the session's first track is
-/// shifted by that much on the shared timeline, both in the mix (here) and in the ASR
-/// timestamps (`transcribe_tracks` prepends the same lead).
+/// shifted by that much on the shared timeline, both in the mix (here, by placing its samples
+/// at the `lead_samples` offset) and in the segment timestamps (`transcribe_tracks` shifts the
+/// aligned segments by the same lead — M3: arithmetic, no prepended zeros).
 ///
 /// PCM lifecycle (the audio-safety invariant): on success the PCMs are KEPT — they are still
 /// the per-track transcription source; the caller removes them only once the whole finalize
@@ -1089,8 +1222,9 @@ fn archive_tracks(tracks: &[CapturedTrack], wav_path: &Path) -> Result<Option<Ve
 /// [-1, 1], shorter tracks padded with silence). Peak RAM is one chunk per track (~256 KiB),
 /// not the whole session — the finalize counterpart of the capture path's streaming design.
 ///
-/// ponytail: plain sum + clamp, like `mix_tracks`. Two people rarely talk over each other, so
-/// clipping is rare; a soft limiter is the upgrade path if overlap distortion is ever heard.
+/// ponytail: plain sum + clamp — this is the whole mixer (the old in-RAM `mix_tracks` was
+/// replaced by this streaming version). Two people rarely talk over each other, so clipping is
+/// rare; a soft limiter is the upgrade path if overlap distortion is ever heard.
 fn stream_mix_to_wav(tracks: &[ArchivedTrack], wav_path: &Path) -> Result<()> {
     use std::io::{BufReader, Read};
 
@@ -1146,14 +1280,50 @@ fn stream_mix_to_wav(tracks: &[ArchivedTrack], wav_path: &Path) -> Result<()> {
 }
 
 /// Decode a raw little-endian i16 PCM file to normalised f32. A dangling odd byte
-/// from a torn final write is dropped (`chunks_exact`), so crash-truncated files
-/// decode cleanly instead of panicking.
+/// from a torn final write is dropped, so crash-truncated files decode cleanly instead
+/// of panicking.
+///
+/// M3: read in fixed-size chunks straight into the one f32 buffer (`with_capacity` sized from
+/// the file length) instead of `fs::read` + convert. The old shape held BOTH the raw byte Vec
+/// and the f32 Vec alive at once — a 512 MB transient at 89 min just to obtain a 342 MB buffer.
+/// Now only the destination buffer plus one small read window ever live; `out` is the legitimate
+/// resident working set (ONE track at a time), the transient is gone.
 fn read_pcm_i16(path: &Path) -> Result<Vec<f32>> {
-    let bytes = fs::read(path)?;
-    Ok(bytes
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / i16::MAX as f32)
-        .collect())
+    use std::io::{BufReader, Read};
+
+    // 64k i16 samples per read — the transient read window is 128 KiB regardless of track length.
+    const CHUNK_BYTES: usize = 64 * 1024 * 2;
+
+    let file = File::open(path)?;
+    let len = file.metadata()?.len() as usize;
+    let mut reader = BufReader::new(file);
+    let mut out: Vec<f32> = Vec::with_capacity(len / 2);
+    let mut buf = vec![0u8; CHUNK_BYTES];
+    let mut carry: Option<u8> = None;
+
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        let mut bytes = &buf[..n];
+        if let Some(lo) = carry.take() {
+            // A sample split across two reads: pair last read's dangling low byte with this
+            // read's first high byte, so chunking never drops a real sample at a read boundary.
+            out.push(i16::from_le_bytes([lo, bytes[0]]) as f32 / i16::MAX as f32);
+            bytes = &bytes[1..];
+        }
+        let mut pairs = bytes.chunks_exact(2);
+        for b in pairs.by_ref() {
+            out.push(i16::from_le_bytes([b[0], b[1]]) as f32 / i16::MAX as f32);
+        }
+        if let Some(&lo) = pairs.remainder().first() {
+            carry = Some(lo);
+        }
+    }
+    // A single byte left in `carry` is a torn final write (odd file length) — dropped, matching
+    // the old `chunks_exact(2)` behaviour.
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1645,7 +1815,7 @@ mod tests {
     }
 
     impl Transcriber for StubTranscriber {
-        fn is_model_loaded(&self) -> bool {
+        fn ensure_model_ready(&self) -> bool {
             self.loaded
         }
         fn transcribe_with_segments(&self, samples: Vec<f32>) -> Result<(String, Vec<AsrSegment>)> {
@@ -1807,9 +1977,11 @@ mod tests {
     }
 
     #[test]
-    fn persist_keeps_partial_transcript_as_done_when_one_track_fails() {
-        // The ponytail policy: a partial result stays visible as Done; the WAV holds both
-        // sides so the History retry can redo the whole thing.
+    fn persist_marks_failed_but_keeps_partial_transcript_when_a_track_fails() {
+        // C1 dual-track honesty: track 1 transcribes, track 2 errors. The row must land on
+        // Failed — a meeting that silently lost half its speakers must NOT read as Done — while
+        // the successfully transcribed track's text AND segments are preserved (visible in
+        // History) and the WAV holds both sides so the retry can redo the whole thing.
         let dir = scratch("partial");
         let tracks = vec![
             archived(&dir, "a.mic.session.pcm", Source::Mic, &[1000; 8], 0),
@@ -1840,8 +2012,19 @@ mod tests {
         .unwrap();
 
         let updates = sink.updates.lock().unwrap();
-        assert_eq!(updates[0].1, TranscriptionStatus::Done);
-        assert!(updates[0].0.contains("hello from mic"));
+        assert_eq!(
+            updates[0].1,
+            TranscriptionStatus::Failed,
+            "a lost track must fail the row, not hide behind a partial Done"
+        );
+        assert!(
+            updates[0].0.contains("hello from mic"),
+            "the good track's text is still preserved"
+        );
+        assert!(
+            !sink.segments.lock().unwrap().is_empty(),
+            "the good track's segments are still persisted (visible in History)"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1891,25 +2074,102 @@ mod tests {
     }
 
     #[test]
-    fn transcribe_tracks_prepends_the_lead_silence_for_asr_timestamps() {
-        let dir = scratch("lead-asr");
+    fn transcribe_tracks_shifts_segments_by_the_lead_not_the_samples() {
+        // M3: the lead silence is metadata, not data. The engine sees the RAW samples (no
+        // multi-hour buffer of prepended zeros), and the returned segments are shifted onto the
+        // shared timeline by the lead's duration — the identical timestamps the old physical pad
+        // produced. lead_samples 1600 @ 16 kHz = 100 ms.
+        let dir = scratch("lead-shift");
         let tracks = vec![archived(
             &dir,
             "a.system.session.pcm",
             Source::SystemAudio,
             &[1000; 8],
-            16,
+            1600,
         )];
-        let tm = StubTranscriber::with_script(vec![Ok((String::new(), vec![]))]);
+        let tm = StubTranscriber::with_script(vec![Ok((
+            "them".into(),
+            vec![asr_seg(200, 500, "them")],
+        ))]);
 
-        let _ = transcribe_tracks(&tm, &no_model_diarizer(), &tracks);
+        let (track_segments, _, _) = transcribe_tracks(&tm, &no_model_diarizer(), &tracks);
 
         assert_eq!(
             *tm.seen_sample_counts.lock().unwrap(),
-            vec![16 + 8],
-            "the late track's samples must be shifted onto the shared timeline"
+            vec![8],
+            "the engine sees only the raw samples — the lead is no longer materialised as zeros"
+        );
+        assert_eq!(
+            (track_segments[0][0].start_ms, track_segments[0][0].end_ms),
+            (300, 600),
+            "the aligned segment is shifted forward by the 100 ms lead"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lead_ms_matches_the_source_lead_silence_ms() {
+        use crate::audio_toolkit::constants::WHISPER_SAMPLE_RATE;
+        // The shift must equal the lead_silence_ms the lead_samples was derived from, so the
+        // arithmetic offset reproduces the old physical pad exactly.
+        for ms in [0u64, 1, 100, 250, 3_600_000] {
+            let samples = (ms * WHISPER_SAMPLE_RATE as u64 / 1000) as usize;
+            assert_eq!(lead_ms(samples), ms as i64);
+        }
+    }
+
+    #[test]
+    fn shift_segments_moves_both_bounds_and_no_ops_at_zero() {
+        let base = vec![
+            TimedSegment {
+                start_ms: 0,
+                end_ms: 500,
+                speaker_id: None,
+                speaker_label: Some(MIC_LABEL.to_string()),
+                text: "a".into(),
+            },
+            TimedSegment {
+                start_ms: 600,
+                end_ms: 1000,
+                speaker_id: Some(1),
+                speaker_label: None,
+                text: "b".into(),
+            },
+        ];
+
+        let mut shifted = base.clone();
+        shift_segments(&mut shifted, 250);
+        assert_eq!((shifted[0].start_ms, shifted[0].end_ms), (250, 750));
+        assert_eq!((shifted[1].start_ms, shifted[1].end_ms), (850, 1250));
+
+        // The session's first track (lead 0) is untouched.
+        let mut zeroed = base.clone();
+        shift_segments(&mut zeroed, 0);
+        assert_eq!(zeroed, base);
+    }
+
+    #[test]
+    fn read_pcm_i16_streams_multiple_read_chunks_identically() {
+        // Golden test for the chunked decoder: a file larger than one read window (64k samples)
+        // must decode byte-identically to a direct convert — the carry logic across read
+        // boundaries preserves every sample. Odd length also exercises the torn-tail drop.
+        let path = tmp("stream-multichunk.session.pcm");
+        let count = 64 * 1024 + 37; // spans two read windows
+        let mut f = File::create(&path).unwrap();
+        for i in 0..count {
+            let s = (i as i32 % 30000 - 15000) as i16;
+            f.write_all(&s.to_le_bytes()).unwrap();
+        }
+        f.write_all(&[0x7f]).unwrap(); // torn final half-sample
+        f.flush().unwrap();
+
+        let decoded = read_pcm_i16(&path).unwrap();
+        assert_eq!(decoded.len(), count, "the dangling odd byte is dropped");
+        for i in 0..count {
+            let expected = (i as i32 % 30000 - 15000) as i16 as f32 / i16::MAX as f32;
+            assert!((decoded[i] - expected).abs() < 1e-9, "sample {i} mismatch");
+        }
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -1937,14 +2197,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_status_is_failed_only_when_all_failed_and_nothing_produced() {
-        assert_eq!(resolve_status("", &[], true), TranscriptionStatus::Failed);
-        // Silence transcribed to nothing but with no errors is a successful (empty) result.
-        assert_eq!(resolve_status("", &[], false), TranscriptionStatus::Done);
-        assert_eq!(
-            resolve_status("partial", &[], true),
-            TranscriptionStatus::Done
-        );
+    fn resolve_status_fails_on_any_track_error_else_done() {
+        // C1: ANY per-track error fails the row (even with a partial transcript produced) —
+        // a clean run, including silence that produced no text, is Done.
+        assert_eq!(resolve_status(true), TranscriptionStatus::Failed);
+        assert_eq!(resolve_status(false), TranscriptionStatus::Done);
     }
 
     // --- recovery planning ------------------------------------------------------------------
@@ -1956,6 +2213,7 @@ mod tests {
                 PathBuf::from("/rec/session-9-0.system.session.pcm"),
                 PathBuf::from("/rec/session-9-0.mic.session.pcm"),
             ],
+            |_| false,
             |_| false,
         );
         assert_eq!(plans.len(), 1, "one crash = one session, even dual-stream");
@@ -1975,14 +2233,59 @@ mod tests {
 
     #[test]
     fn recovery_only_cleans_up_pcms_whose_wav_already_exists() {
-        // Crash after the WAV was written but before the PCMs were removed: re-finalizing
-        // would insert a duplicate history row — the audio is already archived.
+        // Crash after the WAV was written AND the row was persisted, but before the PCMs were
+        // removed: re-finalizing would insert a duplicate history row — the audio is already
+        // archived and visible.
         let plans = plan_recovery(
             vec![PathBuf::from("/rec/session-9-0.mic.session.pcm")],
+            |_| true,
             |_| true,
         );
         assert!(matches!(&plans[0], RecoveryPlan::CleanupArchived(p)
             if p == &PathBuf::from("/rec/session-9-0.mic.session.pcm")));
+    }
+
+    #[test]
+    fn recovery_adopts_an_archived_session_that_has_no_history_row() {
+        // The narrow finalize window: the WAV was written but the crash beat `save_pending_entry`,
+        // so the audio exists with no row. Cleaning up the PCM (the old behavior) would lose the
+        // recording forever — instead adopt it as ONE retryable Meeting row (dual PCMs → Meeting).
+        let plans = plan_recovery(
+            vec![
+                PathBuf::from("/rec/session-9-0.system.session.pcm"),
+                PathBuf::from("/rec/session-9-0.mic.session.pcm"),
+            ],
+            |_| true,  // WAV archived
+            |_| false, // but no row points at it
+        );
+        assert_eq!(plans.len(), 1, "one archive = one adopted session");
+        match &plans[0] {
+            RecoveryPlan::AdoptOrphanArchive {
+                pcms,
+                wav_path,
+                source,
+            } => {
+                assert_eq!(wav_path, &PathBuf::from("/rec/session-9-0.wav"));
+                assert_eq!(pcms.len(), 2, "both PCMs removed once adopted");
+                assert!(matches!(source, EntrySource::Meeting));
+            }
+            other => panic!("expected AdoptOrphanArchive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recovery_adopts_a_solo_system_orphan_with_its_source() {
+        let plans = plan_recovery(
+            vec![PathBuf::from("/rec/session-3-0.system.session.pcm")],
+            |_| true,
+            |_| false,
+        );
+        match &plans[0] {
+            RecoveryPlan::AdoptOrphanArchive { source, .. } => {
+                assert!(matches!(source, EntrySource::System));
+            }
+            other => panic!("expected AdoptOrphanArchive, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1992,6 +2295,7 @@ mod tests {
                 PathBuf::from("/rec/session-1-0.session.pcm"), // legacy single-track name
                 PathBuf::from("/rec/session-2-0.system.session.pcm"),
             ],
+            |_| false,
             |_| false,
         );
         assert_eq!(plans.len(), 2, "different session ids never merge");

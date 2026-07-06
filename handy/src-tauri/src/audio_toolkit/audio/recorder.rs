@@ -178,6 +178,12 @@ impl AudioRecorder {
             return Ok(()); // already open
         }
 
+        // Unbounded on purpose: the cpal audio callback is realtime and must NEVER block or drop
+        // a frame, so `send` can't fail-fast on a full buffer. Backpressure limitation: if the
+        // consumer stalls, this queue grows silently (~64-192 KB/s). std::mpsc exposes no depth,
+        // and a live samples-in/samples-out lag counter would cost more than it's worth here — the
+        // consumer is a tight per-frame loop that has never been observed to fall behind. Left
+        // unbounded (a bounded channel would change the live-validated capture semantics).
         let (sample_tx, sample_rx) = mpsc::channel::<AudioChunk>();
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
         let (init_tx, init_rx) = mpsc::sync_channel::<Result<(), String>>(1);

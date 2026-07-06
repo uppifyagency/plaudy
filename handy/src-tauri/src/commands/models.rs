@@ -85,6 +85,15 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
         .try_start_loading()
         .ok_or_else(|| "Model load already in progress".to_string())?;
 
+    // One resource, one protocol (C3): reserve the engine before touching the slot. A live
+    // transcription run owns it (a chunked long file can hold it 10-20 min); loading a second
+    // engine here would risk the double-engine incident AND its put-back would clobber this
+    // switch. We choose reject-and-retry over blocking the Settings UI for minutes. Held for the
+    // rest of the function so the load below is serialized against inference.
+    let _reservation = transcription_manager
+        .try_reserve_for_switch()
+        .ok_or_else(|| "A transcription is in progress. Try again once it finishes.".to_string())?;
+
     // Check if model exists and is available
     let model_info = model_manager
         .get_model_info(model_id)
