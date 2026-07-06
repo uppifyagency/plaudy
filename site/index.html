@@ -117,6 +117,11 @@ h1 em{font-style:normal;color:var(--red)}
 .btn-ghost:hover{background:var(--paper);color:var(--ink)}
 .hero-facts{margin-top:3.5rem;font-size:.95rem;color:#8f8e8a;max-width:52ch;line-height:1.6}
 
+/* ---------- hero figure (inline SVG vignette) ---------- */
+.viz{margin:clamp(3.5rem,7vw,5.5rem) 0 0}
+.viz svg{width:100%;height:auto;display:block}
+.viz figcaption{margin-top:1.4rem;font-size:.95rem;color:#8f8e8a;max-width:64ch;line-height:1.6}
+
 /* ---------- statement strip ---------- */
 .strip{background:var(--red-ink);color:#fff;padding:clamp(3rem,6vw,4.5rem) 0}
 .strip p{
@@ -229,6 +234,98 @@ footer .cred a{color:#c9c8c4}
         Tauri. Captures your microphone and the Mac's system audio, and connects to your
         Claude over a local MCP bridge.
       </p>
+
+      <figure class="viz">
+        <svg viewBox="0 0 1200 690" width="1200" height="690" role="img" aria-labelledby="viz-t viz-d">
+          <title id="viz-t">How a Plaudy session looks</title>
+          <desc id="viz-d">The macOS menu-bar icon becomes an ear while recording. Microphone and system audio flow as two separate waveforms into one session card, where the transcript reads as a per-speaker timeline: Me at 0:04, Speaker 1 at 0:09, Speaker 2 at 0:23.</desc>
+
+          <!-- menu bar -->
+          <rect x="0" y="0" width="1200" height="64" rx="16" fill="#131311" stroke="#2e2e2c"/>
+          <rect x="30" y="28" width="44" height="9" rx="4.5" fill="#3a3a37"/>
+          <rect x="90" y="28" width="60" height="9" rx="4.5" fill="#3a3a37"/>
+          <rect x="166" y="28" width="50" height="9" rx="4.5" fill="#3a3a37"/>
+          <rect x="1010" y="25" width="34" height="15" rx="5" fill="none" stroke="#62625e" stroke-width="2"/>
+          <rect x="1046" y="29" width="4" height="7" rx="2" fill="#62625e"/>
+          <circle cx="1085" cy="32.5" r="10" fill="none" stroke="#62625e" stroke-width="2"/>
+          <line x1="1085" y1="32.5" x2="1085" y2="26.5" stroke="#62625e" stroke-width="2" stroke-linecap="round"/>
+          <line x1="1085" y1="32.5" x2="1089.5" y2="35" stroke="#62625e" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="1120" cy="32.5" r="5" fill="#e8340c"/>
+          <!-- the ear: the honest "I'm listening" signal -->
+          <g stroke="#f6f5f2" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" fill="none">
+            <path d="M1138 26 a15 15 0 0 1 30 0 c0 6 -3.5 8.2 -7 11 c-2 1.6 -3 3.4 -3 6 a7 7 0 0 1 -14 0 c0 -8 -6 -9.5 -6 -17"/>
+            <path d="M1146 25 a8.5 8.5 0 0 1 14 4 c-.5 3.5 -3 4.6 -4.5 7"/>
+          </g>
+
+          <!-- mic waveform -->
+          <text x="2" y="164" fill="#8f8e8a" font-size="24" font-weight="600">Mic</text>
+          <g fill="#e8340c">
+            <rect x="2"   y="216" width="7" height="28" rx="3.5"/><rect x="17"  y="204" width="7" height="52" rx="3.5"/>
+            <rect x="32"  y="192" width="7" height="76" rx="3.5"/><rect x="47"  y="212" width="7" height="36" rx="3.5"/>
+            <rect x="62"  y="199" width="7" height="62" rx="3.5"/><rect x="77"  y="186" width="7" height="88" rx="3.5"/>
+            <rect x="92"  y="206" width="7" height="48" rx="3.5"/><rect x="107" y="220" width="7" height="20" rx="3.5"/>
+            <rect x="122" y="209" width="7" height="42" rx="3.5"/><rect x="137" y="195" width="7" height="70" rx="3.5"/>
+            <rect x="152" y="184" width="7" height="92" rx="3.5"/><rect x="167" y="202" width="7" height="56" rx="3.5"/>
+            <rect x="182" y="214" width="7" height="32" rx="3.5"/><rect x="197" y="222" width="7" height="16" rx="3.5"/>
+            <rect x="212" y="207" width="7" height="46" rx="3.5"/><rect x="227" y="190" width="7" height="80" rx="3.5"/>
+            <rect x="242" y="203" width="7" height="54" rx="3.5"/><rect x="257" y="216" width="7" height="28" rx="3.5"/>
+            <rect x="272" y="210" width="7" height="40" rx="3.5"/><rect x="287" y="221" width="7" height="18" rx="3.5"/>
+          </g>
+
+          <!-- system-audio waveform -->
+          <text x="2" y="356" fill="#8f8e8a" font-size="24" font-weight="600">System audio</text>
+          <g fill="#8f8e8a">
+            <rect x="2"   y="414" width="7" height="24" rx="3.5"/><rect x="17"  y="400" width="7" height="52" rx="3.5"/>
+            <rect x="32"  y="410" width="7" height="32" rx="3.5"/><rect x="47"  y="392" width="7" height="68" rx="3.5"/>
+            <rect x="62"  y="382" width="7" height="88" rx="3.5"/><rect x="77"  y="404" width="7" height="44" rx="3.5"/>
+            <rect x="92"  y="416" width="7" height="20" rx="3.5"/><rect x="107" y="398" width="7" height="56" rx="3.5"/>
+            <rect x="122" y="388" width="7" height="76" rx="3.5"/><rect x="137" y="408" width="7" height="36" rx="3.5"/>
+            <rect x="152" y="418" width="7" height="16" rx="3.5"/><rect x="167" y="402" width="7" height="48" rx="3.5"/>
+            <rect x="182" y="390" width="7" height="72" rx="3.5"/><rect x="197" y="412" width="7" height="28" rx="3.5"/>
+            <rect x="212" y="396" width="7" height="60" rx="3.5"/><rect x="227" y="386" width="7" height="80" rx="3.5"/>
+            <rect x="242" y="406" width="7" height="40" rx="3.5"/><rect x="257" y="417" width="7" height="18" rx="3.5"/>
+            <rect x="272" y="400" width="7" height="52" rx="3.5"/><rect x="287" y="411" width="7" height="30" rx="3.5"/>
+          </g>
+
+          <!-- streams converge into the session card -->
+          <path d="M312 230 C 372 230 366 302 424 302" fill="none" stroke="#3a3a37" stroke-width="2.5"/>
+          <path d="M312 426 C 372 426 366 354 424 354" fill="none" stroke="#3a3a37" stroke-width="2.5"/>
+          <!-- recording thread from the ear down to the card -->
+          <path d="M1152 66 V 128" fill="none" stroke="#e8340c" stroke-width="2.5" stroke-dasharray="2 8" stroke-linecap="round"/>
+
+          <!-- session card -->
+          <rect x="424" y="128" width="776" height="540" rx="20" fill="#f6f5f2"/>
+          <text x="464" y="200" fill="#0a0a0a" font-size="38" font-weight="700" letter-spacing="-0.5">Weekly product sync</text>
+          <text x="464" y="236" fill="#62625e" font-size="24">Jul 5, 24 min, meeting, mic + system audio</text>
+          <line x1="464" y1="266" x2="1160" y2="266" stroke="#0a0a0a" opacity="0.15"/>
+
+          <rect x="464" y="300" width="76" height="38" rx="19" fill="#d42e0a"/>
+          <text x="502" y="326" fill="#ffffff" font-size="22" font-weight="700" text-anchor="middle">Me</text>
+          <text x="562" y="326" fill="#62625e" font-size="22">0:04</text>
+          <rect x="700" y="306" width="380" height="11" rx="5.5" fill="#d8d6d0"/>
+          <rect x="700" y="327" width="264" height="11" rx="5.5" fill="#d8d6d0"/>
+
+          <rect x="464" y="394" width="152" height="38" rx="19" fill="none" stroke="#0a0a0a" stroke-width="1.5"/>
+          <text x="540" y="420" fill="#0a0a0a" font-size="22" font-weight="600" text-anchor="middle">Speaker 1</text>
+          <text x="638" y="420" fill="#62625e" font-size="22">0:09</text>
+          <rect x="700" y="400" width="420" height="11" rx="5.5" fill="#d8d6d0"/>
+          <rect x="700" y="421" width="318" height="11" rx="5.5" fill="#d8d6d0"/>
+
+          <rect x="464" y="488" width="152" height="38" rx="19" fill="none" stroke="#0a0a0a" stroke-width="1.5"/>
+          <text x="540" y="514" fill="#0a0a0a" font-size="22" font-weight="600" text-anchor="middle">Speaker 2</text>
+          <text x="638" y="514" fill="#62625e" font-size="22">0:23</text>
+          <rect x="700" y="494" width="348" height="11" rx="5.5" fill="#d8d6d0"/>
+          <rect x="700" y="515" width="196" height="11" rx="5.5" fill="#d8d6d0"/>
+
+          <circle cx="472" cy="608" r="5" fill="#d42e0a"/>
+          <text x="490" y="615" fill="#62625e" font-size="22">Transcribed and diarized on this Mac</text>
+        </svg>
+        <figcaption>
+          What a session looks like: the menu-bar icon becomes an ear while Plaudy listens,
+          your mic and the Mac's system audio record as two streams, and the result is one
+          speaker-attributed timeline. Everything in this picture happens on your Mac.
+        </figcaption>
+      </figure>
     </div>
   </div>
 </header>
