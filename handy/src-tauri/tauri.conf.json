@@ -44,7 +44,7 @@
       ],
       "hardenedRuntime": true,
       "minimumSystemVersion": "14.4",
-      "signingIdentity": "-",
+      "signingIdentity": "Plaudy Dev",
       "entitlements": "Entitlements.plist"
     },
     "linux": {
