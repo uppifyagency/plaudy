@@ -440,7 +440,11 @@
       "privacyNote": "Records your microphone and this Mac's audio as two streams, separated by speaker. Nothing ever leaves your Mac.",
       "autoCapture": {
         "title": "Auto-capture",
-        "description": "Start a meeting session automatically when another app plays audio (a call, a video), and stop when it goes quiet. Experimental — everything stays on this Mac."
+        "description": "Start a meeting session automatically when another app plays audio (a call, a video), and stop when it goes quiet. Experimental — everything stays on this Mac.",
+        "voiceTrigger": {
+          "title": "Voice trigger",
+          "description": "Also start when speech is heard at the microphone. Keeps the mic listening while idle — macOS shows the mic-in-use indicator the whole time. Nothing leaves this Mac."
+        }
       }
     },
     "history": {

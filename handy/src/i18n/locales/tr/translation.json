@@ -568,7 +568,11 @@
       "privacyNote": "Mikrofonunuzu ve bu Mac'in sesini konuşmacıya göre ayrılmış iki akış olarak kaydeder. Hiçbir şey Mac'inizden dışarı çıkmaz.",
       "autoCapture": {
         "title": "Otomatik kayıt",
-        "description": "Başka bir uygulama ses çaldığında (bir arama, bir video) otomatik olarak toplantı oturumu başlatır ve sessizlikte durdurur. Deneysel — her şey bu Mac'te kalır."
+        "description": "Başka bir uygulama ses çaldığında (bir arama, bir video) otomatik olarak toplantı oturumu başlatır ve sessizlikte durdurur. Deneysel — her şey bu Mac'te kalır.",
+        "voiceTrigger": {
+          "title": "Ses tetikleyici",
+          "description": "Mikrofonda konuşma duyulduğunda da başlar. Boştayken mikrofonu dinlemede tutar — macOS mikrofon göstergesini sürekli gösterir. Hiçbir şey bu Mac’ten çıkmaz."
+        }
       }
     }
   },

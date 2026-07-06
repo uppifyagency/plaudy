@@ -358,6 +358,11 @@ pub struct AppSettings {
     /// session, never records on its own.
     #[serde(default = "default_auto_capture_enabled")]
     pub auto_capture_enabled: bool,
+    /// Voice trigger for auto-capture: also start when speech is heard at the microphone.
+    /// Separate opt-in because it holds the mic open while idle (permanent mic-in-use
+    /// indicator) — call-only users shouldn't pay that.
+    #[serde(default = "default_voice_trigger_enabled")]
+    pub voice_trigger_enabled: bool,
     #[serde(default)]
     pub selected_microphone: Option<String>,
     #[serde(default)]
@@ -446,6 +451,10 @@ fn default_always_on_microphone() -> bool {
 }
 
 fn default_auto_capture_enabled() -> bool {
+    false
+}
+
+fn default_voice_trigger_enabled() -> bool {
     false
 }
 
@@ -785,6 +794,7 @@ pub fn get_default_settings() -> AppSettings {
         selected_model: "".to_string(),
         always_on_microphone: false,
         auto_capture_enabled: false,
+        voice_trigger_enabled: false,
         selected_microphone: None,
         clamshell_microphone: None,
         selected_output_device: None,

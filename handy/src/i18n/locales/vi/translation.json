@@ -568,7 +568,11 @@
       "privacyNote": "Ghi micrô và âm thanh của máy Mac này thành hai luồng, tách theo người nói. Không có gì rời khỏi máy Mac của bạn.",
       "autoCapture": {
         "title": "Tự động ghi",
-        "description": "Tự động bắt đầu phiên họp khi ứng dụng khác phát âm thanh (cuộc gọi, video) và dừng khi im lặng. Thử nghiệm — mọi thứ đều ở lại trên máy Mac này."
+        "description": "Tự động bắt đầu phiên họp khi ứng dụng khác phát âm thanh (cuộc gọi, video) và dừng khi im lặng. Thử nghiệm — mọi thứ đều ở lại trên máy Mac này.",
+        "voiceTrigger": {
+          "title": "Kích hoạt bằng giọng nói",
+          "description": "Cũng bắt đầu khi nghe thấy giọng nói ở micrô. Giữ micrô lắng nghe khi nhàn rỗi — macOS luôn hiển thị chỉ báo micrô đang dùng. Không có gì rời khỏi máy Mac này."
+        }
       }
     }
   },

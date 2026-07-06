@@ -203,7 +203,7 @@ export function SessionsSettings() {
           {t("settings.sessions.privacyNote")}
         </p>
 
-        {/* Seamless auto-capture — the supervisor reads this flag live, no restart needed */}
+        {/* Seamless auto-capture — the supervisor reads these flags live, no restart needed */}
         <div className="glass-panel w-full max-w-md px-4 py-1">
           <ToggleSwitch
             checked={getSetting("auto_capture_enabled") ?? false}
@@ -215,6 +215,20 @@ export function SessionsSettings() {
             description={t("settings.sessions.autoCapture.description")}
             grouped={true}
           />
+          {(getSetting("auto_capture_enabled") ?? false) && (
+            <ToggleSwitch
+              checked={getSetting("voice_trigger_enabled") ?? false}
+              onChange={(enabled) =>
+                updateSetting("voice_trigger_enabled", enabled)
+              }
+              isUpdating={isUpdating("voice_trigger_enabled")}
+              label={t("settings.sessions.autoCapture.voiceTrigger.title")}
+              description={t(
+                "settings.sessions.autoCapture.voiceTrigger.description",
+              )}
+              grouped={true}
+            />
+          )}
         </div>
       </div>
 

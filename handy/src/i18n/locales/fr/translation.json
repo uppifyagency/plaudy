@@ -568,7 +568,11 @@
       "privacyNote": "Enregistre votre micro et l'audio de ce Mac en deux flux, séparés par locuteur. Rien ne quitte jamais votre Mac.",
       "autoCapture": {
         "title": "Capture automatique",
-        "description": "Démarre automatiquement une session de réunion quand une autre app joue de l'audio (un appel, une vidéo), et s'arrête quand le silence revient. Expérimental — tout reste sur ce Mac."
+        "description": "Démarre automatiquement une session de réunion quand une autre app joue de l'audio (un appel, une vidéo), et s'arrête quand le silence revient. Expérimental — tout reste sur ce Mac.",
+        "voiceTrigger": {
+          "title": "Déclenchement vocal",
+          "description": "Démarre aussi quand une voix est détectée au micro. Garde le micro à l’écoute au repos — macOS affiche l’indicateur micro en permanence. Rien ne quitte ce Mac."
+        }
       }
     }
   },

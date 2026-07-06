@@ -440,7 +440,11 @@
       "privacyNote": "Registra il tuo microfono e l'audio di questo Mac come due flussi, separati per interlocutore. Niente lascia mai il tuo Mac.",
       "autoCapture": {
         "title": "Cattura automatica",
-        "description": "Avvia automaticamente una sessione riunione quando un'altra app riproduce audio (una chiamata, un video) e la interrompe quando torna il silenzio. Sperimentale — tutto resta su questo Mac."
+        "description": "Avvia automaticamente una sessione riunione quando un'altra app riproduce audio (una chiamata, un video) e la interrompe quando torna il silenzio. Sperimentale — tutto resta su questo Mac.",
+        "voiceTrigger": {
+          "title": "Trigger vocale",
+          "description": "Avvia anche quando sente parlato al microfono. Tiene il microfono in ascolto quando inattivo — macOS mostra l’indicatore microfono per tutto il tempo. Niente lascia questo Mac."
+        }
       }
     },
     "history": {

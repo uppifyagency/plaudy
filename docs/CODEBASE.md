@@ -104,7 +104,7 @@ The product thesis: one click captures **both sides of a conversation** — the 
 
 ## 5b. Seamless auto‑capture — per‑process trigger + supervisor (live‑validated E2E 2026‑07‑05)
 
-The "it just works" layer: the app quietly senses when **another app** is playing audio (a call, a meeting) and records it as a meeting session with no click. **Opt‑in** (`auto_capture_enabled`, default `false`) until a real‑meeting validation; the menu‑bar icon becomes an **ear** (`TrayIconState::Listening`, `resources/tray_listening.png`) whenever any session records — the honest signal.
+The "it just works" layer: the app quietly senses **anything audible** — another app playing audio (a call, a meeting; per-process CoreAudio sensor) and, with the separate `voice_trigger_enabled` opt-in, **speech at the microphone** (`MicVoiceSensor`, idle-time Silero VAD; costs the permanent mic-in-use indicator) — and records it as a meeting session with no click. Per-source honesty in `session.rs::ActivityTap`: system marks the loudness clock by RMS, the mic **only on VAD speech**, so room noise can't pass probation or immortalize a session. **Opt‑in** (`auto_capture_enabled`, default `false`) until a real‑meeting validation; the menu‑bar icon becomes an **ear** (`TrayIconState::Listening`, `resources/tray_listening.png`) whenever any session records — the honest signal.
 
 Three layers, strictly separated (all `unsafe` in the sensor; all decisions pure):
 

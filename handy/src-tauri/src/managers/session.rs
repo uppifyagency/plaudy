@@ -97,7 +97,7 @@ pub struct SessionStateChanged {
 
 /// Tap-immune loudness signal for seamless auto-capture's STOP decision. While a session holds the
 /// system-audio tap, the OS "is the output device running" property reads true *because of our own
-/// capture*, so it can't tell when the call goes quiet. Instead the system track's PCM writer marks
+/// capture*, so it can't tell when the call goes quiet. Instead each track's PCM writer marks
 /// the wall-clock of the last loud frame here; the supervisor finalizes once it has been idle long
 /// enough. Cheap (one RMS per 30 ms frame) and immune to our own tap.
 struct AudioActivity {
@@ -139,6 +139,61 @@ impl AudioActivity {
         match last_loud {
             Some(t) => t.elapsed(),
             None => started.elapsed(),
+        }
+    }
+}
+
+/// Judges a track's frames before marking the shared loudness clock — the seam that keeps two
+/// invariants apart:
+///   - **system audio → loudness (RMS)**: any played sound counts (a call, a video);
+///   - **microphone → VAD speech only**: room noise (fan, keyboard) must NOT count, or a false
+///     auto-start would pass probation and *finalize* a junk row instead of being discarded,
+///     and steady noise above the RMS floor would keep a session alive for hours.
+pub(crate) struct ActivityTap {
+    clock: Arc<AudioActivity>,
+    judge: Judge,
+}
+
+enum Judge {
+    Loudness,
+    Speech(Box<dyn crate::audio_toolkit::vad::VoiceActivityDetector>),
+}
+
+impl ActivityTap {
+    fn loudness(clock: Arc<AudioActivity>) -> Self {
+        Self {
+            clock,
+            judge: Judge::Loudness,
+        }
+    }
+
+    fn speech(
+        clock: Arc<AudioActivity>,
+        vad: Box<dyn crate::audio_toolkit::vad::VoiceActivityDetector>,
+    ) -> Self {
+        Self {
+            clock,
+            judge: Judge::Speech(vad),
+        }
+    }
+
+    /// RMS above this (on [-1,1] samples) counts as "audio playing" vs silence / noise floor.
+    const LOUD_RMS: f32 = 0.005;
+
+    fn observe(&mut self, frame: &[f32]) {
+        if frame.is_empty() {
+            return;
+        }
+        let real = match &mut self.judge {
+            Judge::Loudness => {
+                let sum_sq: f32 = frame.iter().map(|s| s * s).sum();
+                (sum_sq / frame.len() as f32).sqrt() > Self::LOUD_RMS
+            }
+            // Wrong-size frames (device hiccup) are just skipped, not errors.
+            Judge::Speech(vad) => vad.is_voice(frame).unwrap_or(false),
+        };
+        if real {
+            self.clock.mark();
         }
     }
 }
@@ -235,6 +290,27 @@ impl SessionManager {
         })
     }
 
+    /// VAD judge for the mic track's activity marking. `None` (model unresolved/unloadable)
+    /// degrades to "mic never marks" — the pre-feature behavior, safe on both invariants.
+    fn mic_speech_vad(&self) -> Option<Box<dyn crate::audio_toolkit::vad::VoiceActivityDetector>> {
+        use tauri::Manager;
+        let path = self
+            .app
+            .path()
+            .resolve(
+                "resources/models/silero_vad_v4.onnx",
+                tauri::path::BaseDirectory::Resource,
+            )
+            .ok()?;
+        match crate::audio_toolkit::vad::SileroVad::new(&path, 0.5) {
+            Ok(vad) => Some(Box::new(vad)),
+            Err(e) => {
+                warn!("Mic activity VAD unavailable ({e}); mic won't mark the loudness clock.");
+                None
+            }
+        }
+    }
+
     /// Self-healing lock on the active session: a panic while holding it (poison) degrades to
     /// "state as it was" instead of turning every later session call into a panic.
     fn active_guard(&self) -> std::sync::MutexGuard<'_, Option<ActiveSession>> {
@@ -254,15 +330,16 @@ impl SessionManager {
             .map(|s| s.started.elapsed().as_millis().min(u32::MAX as u128) as u32)
     }
 
-    /// How long the captured system audio has been silent — the auto-capture supervisor's
-    /// tap-immune STOP signal (the OS device sensor is useless once our own tap is open).
-    pub fn system_audio_idle(&self) -> Duration {
+    /// How long ALL captured tracks (mic and system audio) have been silent — the auto-capture
+    /// supervisor's tap-immune STOP signal (the OS device sensor is useless once our own tap
+    /// is open).
+    pub fn audio_idle(&self) -> Duration {
         self.activity.idle()
     }
 
-    /// Whether any real (loud) system audio has been captured in the current session — the
+    /// Whether any real (loud) audio has been captured on ANY track this session — the
     /// auto-capture supervisor's probation gate to discard false starts.
-    pub fn system_audio_heard(&self) -> bool {
+    pub fn audio_heard(&self) -> bool {
         self.activity.heard_audio()
     }
 
@@ -314,7 +391,15 @@ impl SessionManager {
         for &source in sources {
             // Only the system track drives the auto-capture STOP clock (it's the "other side"
             // of the call going quiet that should end the recording, not the mic).
-            let activity = matches!(source, Source::SystemAudio).then(|| self.activity.clone());
+            // EVERY track feeds the shared loudness clock (the trigger is source-agnostic,
+            // so probation/STOP must hear the mic too — a voice-only session would otherwise
+            // be discarded as silent) — but through per-source judges: see [`ActivityTap`].
+            let activity = match source {
+                Source::Mic => self
+                    .mic_speech_vad()
+                    .map(|vad| ActivityTap::speech(self.activity.clone(), vad)),
+                Source::SystemAudio => Some(ActivityTap::loudness(self.activity.clone())),
+            };
             // If this track's PCM writer ever dies (disk full), stop the whole session so the
             // audio flushed so far is finalized instead of the UI claiming "recording" for
             // hours while nothing is captured. Stop from a fresh thread: stop() joins the
@@ -606,7 +691,7 @@ fn build_track(
     source: Source,
     id: &str,
     dir: &Path,
-    activity: Option<Arc<AudioActivity>>,
+    activity: Option<ActivityTap>,
     on_writer_fail: impl FnOnce() + Send + 'static,
 ) -> Result<Track> {
     let pcm_path = dir.join(format!("{id}.{}{PCM_SUFFIX}", source.suffix()));
@@ -671,7 +756,7 @@ fn build_recorder(source: Source, tx: mpsc::Sender<Vec<f32>>) -> Result<ActiveRe
 fn spawn_pcm_writer(
     pcm_path: PathBuf,
     rx: mpsc::Receiver<Vec<f32>>,
-    activity: Option<Arc<AudioActivity>>,
+    activity: Option<ActivityTap>,
     on_fail: impl FnOnce() + Send + 'static,
 ) -> JoinHandle<Result<u64>> {
     std::thread::spawn(move || {
@@ -688,20 +773,13 @@ fn spawn_pcm_writer(
 fn write_pcm_stream(
     pcm_path: &Path,
     rx: mpsc::Receiver<Vec<f32>>,
-    activity: Option<Arc<AudioActivity>>,
+    mut activity: Option<ActivityTap>,
 ) -> Result<u64> {
-    /// RMS above this (on [-1,1] samples) counts as "audio playing" vs silence / noise floor.
-    const LOUD_RMS: f32 = 0.005;
     let mut out = BufWriter::new(File::create(pcm_path)?);
     let mut written: u64 = 0;
     while let Ok(frame) = rx.recv() {
-        if let Some(act) = &activity {
-            if !frame.is_empty() {
-                let sum_sq: f32 = frame.iter().map(|s| s * s).sum();
-                if (sum_sq / frame.len() as f32).sqrt() > LOUD_RMS {
-                    act.mark();
-                }
-            }
+        if let Some(tap) = &mut activity {
+            tap.observe(&frame);
         }
         for &s in &frame {
             let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
@@ -1444,7 +1522,12 @@ mod tests {
         let quiet = Arc::new(AudioActivity::new());
         quiet.begin();
         let (tx, rx) = mpsc::channel::<Vec<f32>>();
-        let h = spawn_pcm_writer(dir.join("q.session.pcm"), rx, Some(quiet.clone()), || {});
+        let h = spawn_pcm_writer(
+            dir.join("q.session.pcm"),
+            rx,
+            Some(ActivityTap::loudness(quiet.clone())),
+            || {},
+        );
         tx.send(vec![0.001; 480]).unwrap();
         drop(tx);
         h.join().unwrap().unwrap();
@@ -1457,7 +1540,12 @@ mod tests {
         let loud = Arc::new(AudioActivity::new());
         loud.begin();
         let (tx, rx) = mpsc::channel::<Vec<f32>>();
-        let h = spawn_pcm_writer(dir.join("l.session.pcm"), rx, Some(loud.clone()), || {});
+        let h = spawn_pcm_writer(
+            dir.join("l.session.pcm"),
+            rx,
+            Some(ActivityTap::loudness(loud.clone())),
+            || {},
+        );
         tx.send(vec![0.5; 480]).unwrap();
         drop(tx);
         h.join().unwrap().unwrap();
@@ -1466,6 +1554,42 @@ mod tests {
             "a loud frame must mark system audio as heard"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The invariant that keeps probation honest with the mic in the loop: a mic frame marks
+    /// the clock ONLY when the VAD says "speech". LOUD room noise (fan, keyboard — well above
+    /// the RMS floor) with a silent VAD must never count as heard, or a false auto-start would
+    /// be finalized as a junk row instead of discarded.
+    #[test]
+    fn mic_tap_marks_on_vad_speech_never_on_loud_noise() {
+        struct FixedVad(bool);
+        impl crate::audio_toolkit::vad::VoiceActivityDetector for FixedVad {
+            fn push_frame<'a>(
+                &'a mut self,
+                frame: &'a [f32],
+            ) -> anyhow::Result<crate::audio_toolkit::vad::VadFrame<'a>> {
+                Ok(if self.0 {
+                    crate::audio_toolkit::vad::VadFrame::Speech(frame)
+                } else {
+                    crate::audio_toolkit::vad::VadFrame::Noise
+                })
+            }
+        }
+
+        // Loud noise, VAD says "not speech" → not heard.
+        let clock = Arc::new(AudioActivity::new());
+        clock.begin();
+        let mut tap = ActivityTap::speech(clock.clone(), Box::new(FixedVad(false)));
+        tap.observe(&vec![0.5; 480]);
+        assert!(
+            !clock.heard_audio(),
+            "loud non-speech on the mic must NOT mark the clock"
+        );
+
+        // Speech → heard.
+        let mut tap = ActivityTap::speech(clock.clone(), Box::new(FixedVad(true)));
+        tap.observe(&vec![0.05; 480]);
+        assert!(clock.heard_audio(), "VAD speech must mark the clock");
     }
 
     #[test]

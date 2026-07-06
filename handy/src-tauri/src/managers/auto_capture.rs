@@ -25,8 +25,12 @@
 //! lying because of our own tap; the per-process sensor excludes our own PID, so probation is
 //! now a long failsafe against unknown liars, not a hair-trigger.
 //!
-//! Privacy posture (see docs/HANDOFF §12 + memory): this drives the *system-audio* trigger only;
-//! auto-capturing the bare microphone is a separate, opt-in path.
+//! Trigger posture (2026-07-06 product decision): auto-capture reacts to ANY audible source —
+//! an external app playing audio (call, video: the per-process output sensor) OR speech at the
+//! microphone (the idle-time [`MicVoiceSensor`], Silero VAD). The supervisor itself is
+//! source-agnostic: it sees one presence signal and one captured-loudness clock fed by every
+//! track. While auto-capture is enabled and idle, the mic sensor holds the mic open — macOS's
+//! mic-in-use indicator on is the honest cost of "always ready to hear you".
 //!
 //! STATUS — EXPERIMENTAL, OFF by default (`auto_capture_enabled` = false). Flip the setting on
 //! after a live end-to-end validation with a real meeting.
@@ -166,8 +170,11 @@ const MAX_TICK_DT: Duration = Duration::from_millis(500);
 const START_AFTER: Duration = Duration::from_millis(1200);
 /// Silence must persist this long before a session auto-finalizes (tolerates pauses in a call).
 const STOP_AFTER: Duration = Duration::from_secs(4);
-/// Captured system audio idle for less than this counts as "present" for the STOP decision.
+/// Captured audio idle for less than this counts as "present" for the STOP decision.
 const CAPTURED_IDLE_AS_SILENCE: Duration = Duration::from_millis(800);
+/// A VAD speech frame keeps the mic trigger "present" for this long (bridges natural gaps
+/// between words into one signal — the START debounce still needs it sustained).
+const VOICE_HOLD: Duration = Duration::from_millis(800);
 /// Silent-start failsafe: an auto-started session that has captured NO real audio at all for
 /// this long is discarded. Generous on purpose — a muted meeting join is a *valid* start whose
 /// audio arrives when someone speaks; this only defends against a sensor that lies indefinitely.
@@ -182,12 +189,14 @@ const COOLDOWN: Duration = Duration::from_secs(8);
 pub struct TickView {
     pub enabled: bool,
     pub session_active: bool,
-    /// Any real (loud) system audio captured in the current session.
-    pub system_audio_heard: bool,
-    /// How long the captured system audio has been silent.
-    pub system_audio_idle: Duration,
+    /// Any real (loud) audio captured on ANY track (mic or system) in the current session.
+    pub audio_heard: bool,
+    /// How long ALL captured tracks have been silent.
+    pub audio_idle: Duration,
     /// The tap-free per-process sensor: some external process holds a running output stream.
     pub external_output_active: bool,
+    /// The idle-time mic sensor: speech was heard at the microphone recently.
+    pub mic_voice_active: bool,
 }
 
 /// What the I/O loop must do after a tick.
@@ -285,7 +294,7 @@ impl Supervisor {
         // Silent-start failsafe: our session has captured no real audio at all for the whole
         // probation window → the trigger was a lie; discard. (State clears in `after_cancel`,
         // so a failed cancel retries here next tick instead of orphaning the session.)
-        if self.auto_started && !view.system_audio_heard {
+        if self.auto_started && !view.audio_heard {
             if let Some(started) = self.started_at {
                 if now.duration_since(started) >= self.cfg.probation {
                     warn!("Auto-capture: no audio for the whole probation window → discarding.");
@@ -308,11 +317,12 @@ impl Supervisor {
         // while everyone is muted, and that is a *valid* start, not one to discard-and-retrigger
         // every few seconds. Only once audio was actually captured does the captured loudness
         // take over for STOP (an app's open-but-quiet stream can't detect the end of a call).
-        let present = if view.session_active && self.auto_started && view.system_audio_heard {
-            view.system_audio_idle < CAPTURED_IDLE_AS_SILENCE
+        let present = if view.session_active && self.auto_started && view.audio_heard {
+            view.audio_idle < CAPTURED_IDLE_AS_SILENCE
         } else {
-            // Idle, or our session hasn't captured real audio yet: the external sensor rules.
-            view.external_output_active
+            // Idle, or our session hasn't captured real audio yet: the sensors rule.
+            // ANY audible source triggers: an external app's output OR speech at the mic.
+            view.external_output_active || view.mic_voice_active
         };
 
         match self.decider.observe(present, dt) {
@@ -321,7 +331,7 @@ impl Supervisor {
                 if self.auto_started && view.session_active {
                     // Never finalize a session in which no real audio was ever captured —
                     // that would be a junk silence row in History.
-                    if view.system_audio_heard {
+                    if view.audio_heard {
                         Some(Effect::Stop)
                     } else {
                         Some(Effect::Cancel)
@@ -375,11 +385,12 @@ impl Supervisor {
 
 /// Run the seamless auto-capture supervisor forever (spawn on a dedicated thread at startup).
 ///
-/// Posture (see memory `seamless-autocapture-direction`): triggers on **system-audio presence**
-/// only. When it fires it records a *meeting* (`[Mic, SystemAudio]`) — the mic only ever joins a
-/// session that system audio already triggered, never on its own. Gated behind the
-/// `auto_capture_enabled` setting (opt-in). It never fights manual control: it only stops
-/// sessions it started itself, and stands down whenever a manual session is active.
+/// Posture (2026-07-06): triggers on **any audible source** — an external app's output (the
+/// per-process sensor) or **speech at the microphone** (the idle-time VAD sensor). Either way it
+/// records a *meeting* (`[Mic, SystemAudio]`), so whichever side turns out to carry the audio is
+/// captured. Gated behind the `auto_capture_enabled` setting (opt-in). It never fights manual
+/// control: it only stops sessions it started itself, and stands down whenever a manual session
+/// is active.
 ///
 /// Panic containment: a panic anywhere in a tick (poisoned lock, settings hiccup) must neither
 /// silently kill the feature until restart nor orphan a session we started. On panic: if we
@@ -396,9 +407,14 @@ pub fn run_supervisor(app: AppHandle, session: Arc<SessionManager>) {
         let result = catch_unwind(AssertUnwindSafe(|| {
             supervise(&app, &session, &owns_flag);
         }));
-        if result.is_err() {
+        if let Err(payload) = result {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "<non-string panic payload>".into());
             log::error!(
-                "Auto-capture supervisor panicked; recovering (session preserved if ours)."
+                "Auto-capture supervisor panicked; recovering (session preserved if ours). Cause: {msg}"
             );
             if owns.load(Ordering::SeqCst) && session.is_active() {
                 let _ = session.stop();
@@ -415,10 +431,26 @@ pub fn run_supervisor(app: AppHandle, session: Arc<SessionManager>) {
 fn supervise(app: &AppHandle, session: &Arc<SessionManager>, owns: &std::sync::atomic::AtomicBool) {
     use std::sync::atomic::Ordering;
 
+    use crate::audio_toolkit::audio::MicVoiceSensor;
+    use tauri::Manager;
+
     let mut sup = Supervisor::new(SupervisorConfig::default());
     let mut last = Instant::now();
-    // Diagnostic: log only when the sensor flips, so we can see edges without spam.
-    let mut last_present: Option<bool> = None;
+    // Diagnostic: log only when a sensor flips, so we can see edges without spam.
+    let mut last_present: Option<(bool, bool)> = None;
+
+    // The mic trigger's VAD model (bundled resource — same file dictation uses).
+    let vad_model = app
+        .path()
+        .resolve(
+            "resources/models/silero_vad_v4.onnx",
+            tauri::path::BaseDirectory::Resource,
+        )
+        .ok();
+    // Held open only while (enabled && no session): the session's own mic track takes over
+    // during capture, and the mic-in-use indicator must go dark when the feature is off.
+    let mut mic_sensor: Option<MicVoiceSensor> = None;
+    let mut mic_sensor_retry_at: Option<Instant> = None;
 
     loop {
         std::thread::sleep(POLL_INTERVAL);
@@ -426,20 +458,58 @@ fn supervise(app: &AppHandle, session: &Arc<SessionManager>, owns: &std::sync::a
         let dt = now.duration_since(last);
         last = now;
 
+        let st = settings::get_settings(app);
+        let enabled = st.auto_capture_enabled;
+        let session_active = session.is_active();
+
+        // The mic trigger is a SEPARATE opt-in: holding the mic open while idle keeps the
+        // macOS mic-in-use indicator lit the whole time — call-only users shouldn't pay that.
+        let want_mic_sensor = enabled && st.voice_trigger_enabled && !session_active;
+        if !want_mic_sensor {
+            if let Some(sensor) = mic_sensor.take() {
+                sensor.stop();
+            }
+            mic_sensor_retry_at = None;
+        } else if mic_sensor.is_none() && mic_sensor_retry_at.is_none_or(|t| now >= t) {
+            match vad_model.as_deref().map(MicVoiceSensor::start) {
+                Some(Ok(sensor)) => {
+                    info!("Auto-capture: mic voice sensor listening.");
+                    mic_sensor = Some(sensor);
+                    mic_sensor_retry_at = None;
+                }
+                Some(Err(e)) => {
+                    warn!("Auto-capture: mic voice sensor unavailable ({e}); retrying in 30s.");
+                    mic_sensor_retry_at = Some(now + Duration::from_secs(30));
+                }
+                None => {
+                    warn!("Auto-capture: VAD model path unresolved; mic trigger disabled.");
+                    mic_sensor_retry_at = Some(now + Duration::from_secs(300));
+                }
+            }
+        }
+
         let view = TickView {
-            enabled: settings::get_settings(app).auto_capture_enabled,
-            session_active: session.is_active(),
-            system_audio_heard: session.system_audio_heard(),
-            system_audio_idle: session.system_audio_idle(),
-            external_output_active: crate::audio_toolkit::audio::external_output_active(),
+            enabled,
+            session_active,
+            audio_heard: session.audio_heard(),
+            audio_idle: session.audio_idle(),
+            // Don't touch the CoreAudio sensor while the feature is off: tick() ignores it
+            // anyway when disabled, and the sensor is the main panic suspect in the wild.
+            external_output_active: enabled
+                && crate::audio_toolkit::audio::external_output_active(),
+            mic_voice_active: mic_sensor
+                .as_ref()
+                .is_some_and(|sensor| sensor.voice_recent(VOICE_HOLD)),
         };
-        if view.enabled && last_present != Some(view.external_output_active) {
+        let present_now = (view.external_output_active, view.mic_voice_active);
+        if view.enabled && last_present != Some(present_now) {
             info!(
-                "Auto-capture sensor: external_output = {} (owned session={})",
+                "Auto-capture sensors: external_output = {}, mic_voice = {} (owned session={})",
                 view.external_output_active,
+                view.mic_voice_active,
                 sup.owns_session()
             );
-            last_present = Some(view.external_output_active);
+            last_present = Some(present_now);
         }
 
         match sup.tick(&view, now, dt) {
@@ -447,7 +517,7 @@ fn supervise(app: &AppHandle, session: &Arc<SessionManager>, owns: &std::sync::a
             {
                 Ok(()) => {
                     sup.after_start(true, now);
-                    info!("Auto-capture: system audio detected → session started.");
+                    info!("Auto-capture: audio detected → session started.");
                 }
                 Err(e) => {
                     warn!("Auto-capture: start failed ({e}); will retry on next trigger.");
@@ -601,9 +671,22 @@ mod tests {
         TickView {
             enabled,
             session_active,
-            system_audio_heard: heard,
-            system_audio_idle: idle,
+            audio_heard: heard,
+            audio_idle: idle,
             external_output_active: external,
+            mic_voice_active: false,
+        }
+    }
+
+    /// A tick where the ONLY signal is speech at the microphone (external sensor silent).
+    fn voice_view(session_active: bool, heard: bool, idle: Duration) -> TickView {
+        TickView {
+            enabled: true,
+            session_active,
+            audio_heard: heard,
+            audio_idle: idle,
+            external_output_active: false,
+            mic_voice_active: true,
         }
     }
 
@@ -626,6 +709,56 @@ mod tests {
         sup.after_start(true, t1);
         assert!(sup.owns_session());
         (sup, t1)
+    }
+
+    #[test]
+    fn voice_at_the_mic_triggers_a_start_and_speech_marked_sessions_finalize() {
+        // The 2026-07-06 product decision: speech at the mic is a first-class trigger —
+        // "record whatever is audible", not only other apps' output.
+        let mut sup = Supervisor::new(sup_cfg());
+        let t0 = Instant::now();
+        let talking = voice_view(false, false, IDLE_LONG);
+        assert_eq!(sup.tick(&talking, t0, TICK), None); // arming
+        let t1 = t0 + TICK;
+        assert_eq!(
+            sup.tick(&talking, t1, TICK),
+            Some(Effect::Start),
+            "sustained speech at the mic must start a session"
+        );
+        sup.after_start(true, t1);
+
+        // My speech marks the clock via the mic track's VAD tap → audio_heard = true.
+        // Once I stop talking long enough, the session FINALIZES (a monologue is a
+        // recording worth keeping, not a silent junk row).
+        let t2 = t1 + Duration::from_secs(5);
+        let quiet = view(true, true, true, IDLE_LONG, false);
+        let mut effect = sup.tick(&quiet, t2, TICK);
+        let mut t = t2;
+        while effect.is_none() {
+            t += TICK;
+            assert!(t < t2 + Duration::from_secs(10), "must stop within stop_after");
+            effect = sup.tick(&quiet, t, TICK);
+        }
+        assert_eq!(effect, Some(Effect::Stop), "a heard session finalizes, never cancels");
+    }
+
+    #[test]
+    fn ambient_noise_that_never_marks_heard_is_cancelled_after_probation() {
+        // The safety invariant the mic trigger must NOT invert: room noise (fan, keyboard)
+        // does not mark the loudness clock (the mic tap is VAD-gated — see session.rs
+        // `mic_tap_marks_on_vad_speech_never_on_loud_noise`). So even if the VAD misfires
+        // long enough to START a session, a session in which nothing real was ever heard is
+        // still DISCARDED at the end of probation — junk rows must not come back.
+        let (mut sup, t_start) = started_supervisor();
+        let never_heard = view(true, true, false, IDLE_LONG, true);
+        let before = t_start + Duration::from_secs(9);
+        assert_eq!(sup.tick(&never_heard, before, TICK), None, "probation still running");
+        let after = t_start + Duration::from_secs(10);
+        assert_eq!(
+            sup.tick(&never_heard, after, TICK),
+            Some(Effect::Cancel),
+            "a session that never heard real audio is discarded, never finalized"
+        );
     }
 
     #[test]

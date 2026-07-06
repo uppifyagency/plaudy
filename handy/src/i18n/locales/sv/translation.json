@@ -568,7 +568,11 @@
       "privacyNote": "Spelar in din mikrofon och den här Macens ljud som två strömmar, separerade per talare. Inget lämnar någonsin din Mac.",
       "autoCapture": {
         "title": "Automatisk inspelning",
-        "description": "Startar automatiskt en mötessession när en annan app spelar upp ljud (ett samtal, en video) och stoppar när det blir tyst. Experimentellt — allt stannar på den här Macen."
+        "description": "Startar automatiskt en mötessession när en annan app spelar upp ljud (ett samtal, en video) och stoppar när det blir tyst. Experimentellt — allt stannar på den här Macen.",
+        "voiceTrigger": {
+          "title": "Röstutlösare",
+          "description": "Startar också när tal hörs i mikrofonen. Håller mikrofonen lyssnande i viloläge — macOS visar mikrofonindikatorn hela tiden. Inget lämnar den här Macen."
+        }
       }
     }
   },

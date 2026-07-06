@@ -568,7 +568,11 @@
       "privacyNote": "Nagrywa mikrofon i dźwięk tego Maca jako dwa strumienie, rozdzielone według mówiących. Nic nigdy nie opuszcza twojego Maca.",
       "autoCapture": {
         "title": "Automatyczne nagrywanie",
-        "description": "Automatycznie rozpoczyna sesję spotkania, gdy inna aplikacja odtwarza dźwięk (rozmowa, wideo), i zatrzymuje ją, gdy zapada cisza. Eksperymentalne — wszystko zostaje na tym Macu."
+        "description": "Automatycznie rozpoczyna sesję spotkania, gdy inna aplikacja odtwarza dźwięk (rozmowa, wideo), i zatrzymuje ją, gdy zapada cisza. Eksperymentalne — wszystko zostaje na tym Macu.",
+        "voiceTrigger": {
+          "title": "Wyzwalacz głosowy",
+          "description": "Rozpoczyna także, gdy przy mikrofonie słychać mowę. Utrzymuje mikrofon w nasłuchu w trybie bezczynności — macOS cały czas pokazuje wskaźnik mikrofonu. Nic nie opuszcza tego Maca."
+        }
       }
     }
   },

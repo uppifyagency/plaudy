@@ -568,7 +568,11 @@
       "privacyNote": "Graba tu micrófono y el audio de este Mac como dos flujos, separados por hablante. Nada sale nunca de tu Mac.",
       "autoCapture": {
         "title": "Captura automática",
-        "description": "Inicia una sesión de reunión automáticamente cuando otra app reproduce audio (una llamada, un vídeo) y la detiene cuando hay silencio. Experimental: todo permanece en este Mac."
+        "description": "Inicia una sesión de reunión automáticamente cuando otra app reproduce audio (una llamada, un vídeo) y la detiene cuando hay silencio. Experimental: todo permanece en este Mac.",
+        "voiceTrigger": {
+          "title": "Activación por voz",
+          "description": "También inicia cuando se detecta voz en el micrófono. Mantiene el micrófono escuchando en reposo: macOS muestra el indicador de micrófono todo el tiempo. Nada sale de este Mac."
+        }
       }
     }
   },

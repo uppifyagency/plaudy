@@ -568,7 +568,11 @@
       "privacyNote": "Nimmt dein Mikrofon und das Audio dieses Macs als zwei Streams auf, nach Sprecher getrennt. Nichts verlässt jemals deinen Mac.",
       "autoCapture": {
         "title": "Auto-Aufnahme",
-        "description": "Startet automatisch eine Meeting-Sitzung, wenn eine andere App Audio abspielt (ein Anruf, ein Video), und stoppt, wenn es still wird. Experimentell — alles bleibt auf diesem Mac."
+        "description": "Startet automatisch eine Meeting-Sitzung, wenn eine andere App Audio abspielt (ein Anruf, ein Video), und stoppt, wenn es still wird. Experimentell — alles bleibt auf diesem Mac.",
+        "voiceTrigger": {
+          "title": "Sprachauslöser",
+          "description": "Startet auch, wenn Sprache am Mikrofon erkannt wird. Hält das Mikrofon im Leerlauf offen — macOS zeigt dauerhaft die Mikrofon-Anzeige. Nichts verlässt diesen Mac."
+        }
       }
     }
   },

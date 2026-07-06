@@ -116,6 +116,8 @@ const settingUpdaters: {
   debug_mode: (value) => commands.changeDebugModeSetting(value as boolean),
   auto_capture_enabled: (value) =>
     commands.changeAutoCaptureSetting(value as boolean),
+  voice_trigger_enabled: (value) =>
+    commands.changeVoiceTriggerSetting(value as boolean),
   custom_words: (value) => commands.updateCustomWords(value as string[]),
   word_correction_threshold: (value) =>
     commands.changeWordCorrectionThresholdSetting(value as number),

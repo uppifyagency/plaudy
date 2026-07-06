@@ -568,7 +568,11 @@
       "privacyNote": "Nahrává mikrofon a zvuk tohoto Macu jako dva proudy, oddělené podle mluvčích. Nic nikdy neopustí váš Mac.",
       "autoCapture": {
         "title": "Automatické nahrávání",
-        "description": "Automaticky spustí relaci schůzky, když jiná aplikace přehrává zvuk (hovor, video), a zastaví ji, když nastane ticho. Experimentální — vše zůstává na tomto Macu."
+        "description": "Automaticky spustí relaci schůzky, když jiná aplikace přehrává zvuk (hovor, video), a zastaví ji, když nastane ticho. Experimentální — vše zůstává na tomto Macu.",
+        "voiceTrigger": {
+          "title": "Hlasový spouštěč",
+          "description": "Spustí nahrávání i tehdy, když mikrofon zaslechne řeč. Drží mikrofon v pohotovosti — macOS celou dobu zobrazuje indikátor mikrofonu. Nic neopustí tento Mac."
+        }
       }
     }
   },
