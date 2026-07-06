@@ -114,6 +114,8 @@ const settingUpdaters: {
   overlay_position: (value) =>
     commands.changeOverlayPositionSetting(value as string),
   debug_mode: (value) => commands.changeDebugModeSetting(value as boolean),
+  auto_capture_enabled: (value) =>
+    commands.changeAutoCaptureSetting(value as boolean),
   custom_words: (value) => commands.updateCustomWords(value as string[]),
   word_correction_threshold: (value) =>
     commands.changeWordCorrectionThresholdSetting(value as number),
@@ -289,7 +291,9 @@ export const useSettingsStore = create<SettingsStore>()(
         if (updater) {
           await updater(value);
         } else if (key !== "bindings" && key !== "selected_model") {
-          console.warn(`No handler for setting: ${String(key)}`);
+          // Poka-yoke: an unmapped key means the toggle would lie (UI on, backend never told).
+          // Throw so the catch below reverts the optimistic update and the failure is visible.
+          throw new Error(`No handler for setting: ${String(key)}`);
         }
       } catch (error) {
         console.error(`Failed to update setting ${String(key)}:`, error);
