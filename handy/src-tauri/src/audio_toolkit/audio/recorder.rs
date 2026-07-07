@@ -344,6 +344,11 @@ impl AudioRecorder {
         if let Some(h) = self.worker_handle.take() {
             let _ = h.join();
         }
+        // Release the retained chunk-sink sender too. The worker's clone drops when it exits
+        // above, but this original outlives it — and a downstream consumer that ends on channel
+        // close (MicVoiceSensor's VAD worker joins on it) would hang forever otherwise. "Close"
+        // means release every resource, sink included.
+        self.chunk_sink = None;
         self.device = None;
         Ok(())
     }
@@ -624,6 +629,26 @@ mod tests {
 
         drop(sample_tx);
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn close_releases_the_chunk_sink_so_a_consumer_can_terminate() {
+        // THE mic-voice-trigger deadlock: MicVoiceSensor::stop() closes the recorder, then joins
+        // a VAD worker that ends only when the chunk-sink channel closes. If close() keeps the
+        // retained sink sender alive, that worker never terminates and the whole auto-capture
+        // loop wedges for the process lifetime after the first session. close() must drop it.
+        let (tx, rx) = mpsc::channel::<Vec<f32>>();
+        let mut rec = AudioRecorder::new().unwrap().with_chunk_sink(tx);
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            while rx.recv().is_ok() {}
+            let _ = done_tx.send(());
+        });
+        rec.close().unwrap();
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "close() must drop the chunk_sink so the consumer channel closes"
+        );
     }
 }
 
