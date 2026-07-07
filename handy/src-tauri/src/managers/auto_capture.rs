@@ -602,9 +602,13 @@ fn supervise(app: &AppHandle, session: &Arc<SessionManager>, owns: &std::sync::a
             // anyway when disabled, and the sensor is the main panic suspect in the wild.
             external_output_active: enabled
                 && crate::audio_toolkit::audio::external_output_active(),
-            mic_voice_active: mic_sensor
-                .as_ref()
-                .is_some_and(|sensor| sensor.voice_recent(VOICE_HOLD)),
+            // Masked while we're playing back a recording: on speakers, replay audio reaches
+            // the mic and Silero would read it as "someone is talking" (same self-trigger the
+            // per-process sensor's own-PID filter can't catch through the WebView).
+            mic_voice_active: !crate::audio_toolkit::audio::playback_active()
+                && mic_sensor
+                    .as_ref()
+                    .is_some_and(|sensor| sensor.voice_recent(VOICE_HOLD)),
         };
         let present_now = (view.external_output_active, view.mic_voice_active);
         if view.enabled && last_present != Some(present_now) {

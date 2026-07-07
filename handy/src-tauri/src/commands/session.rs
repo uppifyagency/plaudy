@@ -47,3 +47,12 @@ pub fn is_session_active(app: AppHandle) -> bool {
 pub fn session_elapsed_ms(app: AppHandle) -> Option<u32> {
     app.state::<Arc<SessionManager>>().elapsed_ms()
 }
+
+/// Tell auto-capture that we're playing back one of our own recordings, so its audio isn't
+/// mistaken for external output and doesn't auto-trigger a capture of ourselves. The AudioPlayer
+/// calls this true on play, false on pause/ended.
+#[tauri::command]
+#[specta::specta]
+pub fn set_playback_active(active: bool) {
+    crate::audio_toolkit::audio::set_playback_active(active);
+}

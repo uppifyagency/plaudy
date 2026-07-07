@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Play, Pause } from "lucide-react";
 import { formatClock } from "@/utils/formatClock";
+import { commands } from "@/bindings";
 
 interface AudioPlayerProps {
   /** Called when play is clicked and no src is loaded yet. Should return the audio URL. */
@@ -82,13 +83,22 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       setCurrentTime(0);
     };
 
+    // Tell auto-capture we're the ones playing, so replay audio doesn't self-trigger a capture
+    // (the WebView plays from a separate PID the sensor's own-PID filter can't recognize).
     const handleEnded = () => {
       setIsPlaying(false);
       setCurrentTime(audio.duration || 0);
+      commands.setPlaybackActive(false).catch(console.error);
     };
 
-    const handlePlay = () => setIsPlaying(true);
-    const handlePause = () => setIsPlaying(false);
+    const handlePlay = () => {
+      setIsPlaying(true);
+      commands.setPlaybackActive(true).catch(console.error);
+    };
+    const handlePause = () => {
+      setIsPlaying(false);
+      commands.setPlaybackActive(false).catch(console.error);
+    };
 
     audio.addEventListener("loadedmetadata", handleLoadedMetadata);
     audio.addEventListener("ended", handleEnded);
@@ -100,6 +110,9 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("play", handlePlay);
       audio.removeEventListener("pause", handlePause);
+      // Unmounting mid-playback (card collapsed) may skip the pause event — clear the flag so
+      // auto-capture is never left suppressed forever.
+      commands.setPlaybackActive(false).catch(console.error);
     };
   }, []);
 

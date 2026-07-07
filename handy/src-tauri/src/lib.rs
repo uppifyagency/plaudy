@@ -636,6 +636,7 @@ pub fn run(cli_args: CliArgs) {
             commands::session::stop_session,
             commands::session::is_session_active,
             commands::session::session_elapsed_ms,
+            commands::session::set_playback_active,
             commands::transcription::set_model_unload_timeout,
             commands::transcription::get_model_load_status,
             commands::transcription::unload_model_manually,
