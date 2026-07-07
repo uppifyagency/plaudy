@@ -242,6 +242,10 @@ impl DiarizationManager {
         let mut config = OfflineSpeakerDiarizationConfig::default();
         config.segmentation.pyannote.model = Some(self.seg_model.to_string_lossy().into_owned());
         config.embedding.model = Some(self.emb_model.to_string_lossy().into_owned());
+        config.clustering.threshold = diar_cluster_threshold();
+        if let Some(k) = diar_num_clusters() {
+            config.clustering.num_clusters = k;
+        }
 
         let Some(diarizer) = OfflineSpeakerDiarization::create(&config) else {
             log::warn!("diarization: failed to load models, skipping");
@@ -269,7 +273,8 @@ impl DiarizationManager {
 
         let windows = plan_windows(samples, sr);
         if windows.len() == 1 {
-            return run(samples); // whole-track path (short recording), unchanged
+            // whole-track path (short recording), unchanged but for the optional global cap
+            return cap_speakers(run(samples), diar_max_speakers());
         }
 
         let n = windows.len();
@@ -298,7 +303,7 @@ impl DiarizationManager {
                 turns,
             });
         }
-        stitch_windows(diar_windows)
+        cap_speakers(stitch_windows(diar_windows), diar_max_speakers())
     }
 
     /// Non-macOS-aarch64 stub: diarization engine not built for this target (mirrors how the
@@ -307,6 +312,151 @@ impl DiarizationManager {
     pub fn diarize(&self, _samples: &[f32]) -> Vec<SpeakerTurn> {
         Vec::new()
     }
+}
+
+/// Cosine-distance merge threshold for sherpa's agglomerative clustering: two embedding clusters
+/// closer than this fuse into one speaker. Higher → fewer, larger clusters. sherpa's default
+/// (0.5) over-splits on long/noisy real audio — an 89-min meeting of 4 people clustered to 104
+/// speakers. 0.7 merges those fragments back toward the true count. Env-overridable so the value
+/// can be calibrated against a known-truth recording without a recompile.
+///
+/// ponytail: one global threshold is the cheap primary lever. The residual (a speaker silent
+/// across a whole window seam getting a fresh id) is a stitch limitation, not a threshold one —
+/// its real fix is cross-window embedding similarity, blocked until sherpa's Rust binding exposes
+/// the cluster vectors (see `stitch_windows`). Ceiling: on genuinely chaotic audio even 0.8 may
+/// under-merge; a global speaker-count cap is the next lever if calibration proves it necessary.
+fn diar_cluster_threshold() -> f32 {
+    std::env::var("HANDY_DIAR_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.7)
+}
+
+/// Optional fixed speaker count for sherpa's clustering (`num_clusters`). `None` (the default)
+/// keeps sherpa's auto-count (`-1`), governed by [`diar_cluster_threshold`]. When the true count
+/// is known — e.g. re-attributing a specific recording — pinning it via `HANDY_DIAR_NUM_CLUSTERS`
+/// makes every window cluster to exactly that many, which the overlap stitch then matches K↔K
+/// across seams: this is the lever that defeats cross-window fragmentation (the same person split
+/// into a fresh id per window) when auto-count + threshold cannot, because it removes the count's
+/// degree of freedom entirely.
+///
+/// ponytail: a per-window fixed K over-splits a window where fewer people actually speak (someone
+/// left mid-meeting), adding at most one spurious global; that is far cheaper than the tens of
+/// fragments auto-count produces. Not a production default — production doesn't know the count.
+fn diar_num_clusters() -> Option<i32> {
+    std::env::var("HANDY_DIAR_NUM_CLUSTERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&k| k > 0)
+}
+
+/// Optional hard cap on the number of distinct speakers in the final, stitched output
+/// (`HANDY_DIAR_MAX_SPEAKERS`). `None` (default) leaves the count untouched. When set, it is the
+/// last resort against cross-window stitch drift: even with a fixed per-window `num_clusters`, a
+/// window's local speaker that fails the overlap match mints a fresh global, so a long meeting can
+/// still end with more globals than people. Applied after stitching, once the true count is known.
+fn diar_max_speakers() -> Option<usize> {
+    std::env::var("HANDY_DIAR_MAX_SPEAKERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&k| k > 0)
+}
+
+/// Force a diarization result down to at most `max_n` speakers by repeatedly folding the
+/// least-talkative speaker into the one it is most temporally interleaved with (smallest gap
+/// between their turn sets), then densely renumbering by first appearance. No-op when the speaker
+/// count is already within `max_n` or `max_n` is `None`.
+///
+/// ponytail: a pure-timing heuristic, the honest ceiling of a no-embedding engine. Without cluster
+/// vectors it cannot know that two globals are the same voice, so it merges the nearest-in-time —
+/// which CAN fuse two genuinely different people who spoke in the same stretch. It exists only for
+/// the known-count recovery case (the caller supplies the true count); production leaves it off.
+/// The real fix stays cross-window embedding similarity in `stitch_windows`.
+fn cap_speakers(turns: Vec<SpeakerTurn>, max_n: Option<usize>) -> Vec<SpeakerTurn> {
+    use std::collections::HashMap;
+    let Some(max_n) = max_n.filter(|&n| n > 0) else {
+        return turns;
+    };
+    if turns.is_empty() {
+        return turns;
+    }
+
+    // Working set: speaker id -> its turns' (start,end); renumber at the end.
+    let mut by_spk: HashMap<i64, Vec<(i64, i64)>> = HashMap::new();
+    for t in &turns {
+        by_spk.entry(t.speaker).or_default().push((t.start_ms, t.end_ms));
+    }
+
+    // Min gap between two speakers' turn sets (0 if any pair overlaps) — the merge affinity.
+    let gap = |a: &[(i64, i64)], b: &[(i64, i64)]| -> i64 {
+        let mut best = i64::MAX;
+        for &(a0, a1) in a {
+            for &(b0, b1) in b {
+                let g = if a1.min(b1) >= a0.max(b0) {
+                    0
+                } else if a1 < b0 {
+                    b0 - a1
+                } else {
+                    a0 - b1
+                };
+                best = best.min(g);
+            }
+        }
+        best
+    };
+
+    while by_spk.len() > max_n {
+        // Victim = least total talk time (tie: higher id, for determinism).
+        let victim = *by_spk
+            .iter()
+            .min_by(|x, y| {
+                let dx: i64 = x.1.iter().map(|(s, e)| e - s).sum();
+                let dy: i64 = y.1.iter().map(|(s, e)| e - s).sum();
+                dx.cmp(&dy).then(y.0.cmp(x.0))
+            })
+            .map(|(k, _)| k)
+            .unwrap();
+        let vturns = by_spk.remove(&victim).unwrap();
+        // Target = the remaining speaker with the smallest gap (tie: more talk time).
+        let target = *by_spk
+            .iter()
+            .min_by(|x, y| {
+                let gx = gap(&vturns, x.1);
+                let gy = gap(&vturns, y.1);
+                let (tx, ty): (i64, i64) = (
+                    x.1.iter().map(|(s, e)| e - s).sum(),
+                    y.1.iter().map(|(s, e)| e - s).sum(),
+                );
+                gx.cmp(&gy).then(ty.cmp(&tx))
+            })
+            .map(|(k, _)| k)
+            .unwrap();
+        by_spk.get_mut(&target).unwrap().extend(vturns);
+    }
+
+    // Rebuild turns, remap ids dense by first-appearance (earliest start), keep chronological order.
+    let mut merged: Vec<SpeakerTurn> = by_spk
+        .into_iter()
+        .flat_map(|(spk, ts)| {
+            ts.into_iter().map(move |(s, e)| SpeakerTurn {
+                start_ms: s,
+                end_ms: e,
+                speaker: spk,
+            })
+        })
+        .collect();
+    merged.sort_by_key(|t| (t.start_ms, t.end_ms, t.speaker));
+    let mut remap: HashMap<i64, i64> = HashMap::new();
+    let mut next = 0i64;
+    for t in &mut merged {
+        let id = *remap.entry(t.speaker).or_insert_with(|| {
+            let v = next;
+            next += 1;
+            v
+        });
+        t.speaker = id;
+    }
+    merged
 }
 
 // --- windowed diarization: the PURE planning + stitching core (C2), unit-tested without ONNX --
@@ -844,5 +994,207 @@ mod tests {
             out.iter().all(|t| t.speaker == 0),
             "the single speaker keeps one global id across all three windows: {out:?}"
         );
+    }
+
+    // --- cap_speakers (global speaker-count cap) -------------------------------------------
+    #[test]
+    fn cap_is_a_noop_when_within_limit_but_renumbers_dense() {
+        let out = cap_speakers(vec![turn(0, 1000, 5), turn(1000, 2000, 2)], Some(4));
+        // Two speakers, cap 4 → kept; ids densified by first appearance to 0,1.
+        assert_eq!(out.len(), 2);
+        assert_eq!((out[0].speaker, out[1].speaker), (0, 1));
+    }
+
+    #[test]
+    fn cap_none_leaves_everything_untouched() {
+        let input = vec![turn(0, 1000, 7), turn(1000, 2000, 3)];
+        assert_eq!(cap_speakers(input.clone(), None), input);
+    }
+
+    #[test]
+    fn cap_folds_the_least_talkative_into_its_nearest_neighbor() {
+        // Speaker 0 talks a lot early, speaker 1 a lot late, speaker 2 says one short thing right
+        // after speaker 1 → capping to 2 folds the tiny speaker 2 into its nearest, speaker 1.
+        let out = cap_speakers(
+            vec![
+                turn(0, 5000, 0),
+                turn(6000, 11000, 1),
+                turn(11010, 11200, 2), // tiny, adjacent to speaker 1
+            ],
+            Some(2),
+        );
+        let ids: std::collections::BTreeSet<i64> = out.iter().map(|t| t.speaker).collect();
+        assert_eq!(ids.len(), 2, "capped to exactly two speakers");
+        // The tiny turn now shares an id with the [6000,11000) turn (its nearest neighbor).
+        let tiny = out.iter().find(|t| t.start_ms == 11010).unwrap();
+        let neighbor = out.iter().find(|t| t.start_ms == 6000).unwrap();
+        assert_eq!(tiny.speaker, neighbor.speaker);
+    }
+
+    #[test]
+    fn cap_reaches_exactly_the_target_count() {
+        let turns: Vec<SpeakerTurn> = (0..8).map(|i| turn(i * 1000, i * 1000 + 900, i)).collect();
+        let out = cap_speakers(turns, Some(4));
+        let distinct: std::collections::BTreeSet<i64> = out.iter().map(|t| t.speaker).collect();
+        assert_eq!(distinct.len(), 4);
+        assert_eq!(out.len(), 8, "no turns are dropped, only relabelled");
+    }
+
+    // --- one-shot RECOVERY harness (not a unit test): re-diarize a recording whose transcript
+    // text is already correct in the DB but whose speaker attribution over-clustered (the 89-min
+    // → 104-speakers incident). Reuses the REAL windowed `diarize` + `align`, so calibrating here
+    // calibrates production. Read-only by default; writes the DB only with HANDY_REDIARIZE_WRITE=1.
+    //
+    //   export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"
+    //   export CMAKE_POLICY_VERSION_MINIMUM=3.5 HANDY_FORCE_AI_STUB=1
+    //   D="$HOME/Library/Application Support/com.uppify.plaudy"
+    //   HANDY_REDIAR_WAV="$D/recordings/session-1783354350994-10.wav" \
+    //   HANDY_REDIAR_DB="$D/history.db" HANDY_REDIAR_MODELS="$D/models" \
+    //   HANDY_REDIAR_HISTORY_ID=21 HANDY_DIAR_THRESHOLD=0.7 \
+    //   cargo test --lib rediarize_recording -- --ignored --nocapture
+    // Add HANDY_REDIARIZE_WRITE=1 to persist the re-attribution (back up history.db first).
+    #[test]
+    #[ignore = "one-shot recovery; needs real WAV + DB + models via env"]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn rediarize_recording() {
+        let wav = std::env::var("HANDY_REDIAR_WAV").expect("HANDY_REDIAR_WAV");
+        let db = std::env::var("HANDY_REDIAR_DB").expect("HANDY_REDIAR_DB");
+        let models = std::env::var("HANDY_REDIAR_MODELS").expect("HANDY_REDIAR_MODELS");
+        let history_id: i64 = std::env::var("HANDY_REDIAR_HISTORY_ID")
+            .expect("HANDY_REDIAR_HISTORY_ID")
+            .parse()
+            .unwrap();
+
+        // 1) WAV → 16 kHz mono f32 (the recorder writes exactly this; assert, don't guess).
+        let mut reader = hound::WavReader::open(&wav).expect("open wav");
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1, "expected mono");
+        assert_eq!(spec.sample_rate, 16_000, "expected 16 kHz");
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.expect("pcm sample") as f32 / 32768.0)
+            .collect();
+        eprintln!(
+            "[rediar] {} samples ≈ {:.1} min @ threshold {}",
+            samples.len(),
+            samples.len() as f64 / 16_000.0 / 60.0,
+            diar_cluster_threshold(),
+        );
+
+        // 2) Re-diarize with the REAL windowed engine (calibratable via HANDY_DIAR_THRESHOLD).
+        let diarizer = DiarizationManager::new(std::path::Path::new(&models));
+        assert!(diarizer.is_available(), "diarization models missing at {models}");
+        let turns = diarizer.diarize(&samples);
+        assert!(!turns.is_empty(), "diarization produced no turns");
+
+        // 3) Existing ASR segments (text + timings) straight from the DB — never re-transcribe.
+        let conn = rusqlite::Connection::open(&db).expect("open db");
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, start_ms, end_ms, text FROM transcription_segments \
+                 WHERE history_id = ?1 ORDER BY start_ms",
+            )
+            .unwrap();
+        let rows: Vec<(i64, AsrSegment)> = stmt
+            .query_map([history_id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    AsrSegment {
+                        start_ms: r.get(1)?,
+                        end_ms: r.get(2)?,
+                        text: r.get(3)?,
+                    },
+                ))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(!rows.is_empty(), "no segments for history_id {history_id}");
+        let asr: Vec<AsrSegment> = rows.iter().map(|(_, a)| a.clone()).collect();
+
+        // 4) Re-attribute by max temporal overlap (the exact production `align`).
+        let attributed = align(&asr, &turns);
+
+        // 5) Report: distinct speakers + talk-time each (sanity-check "3→4→3, Davide left").
+        use std::collections::BTreeMap;
+        let mut talk_ms: BTreeMap<i64, i64> = BTreeMap::new();
+        let mut unknown = 0usize;
+        for (seg, (_, a)) in attributed.iter().zip(&rows) {
+            match seg.speaker_id {
+                Some(spk) => *talk_ms.entry(spk).or_default() += a.end_ms - a.start_ms,
+                None => unknown += 1,
+            }
+        }
+        // Dense 1-based label numbering, ordered by first appearance's raw diarizer id.
+        let dense: BTreeMap<i64, usize> = talk_ms
+            .keys()
+            .enumerate()
+            .map(|(i, &raw)| (raw, i + 1))
+            .collect();
+        eprintln!(
+            "[rediar] {} distinct speakers ({} segments, {} unknown):",
+            talk_ms.len(),
+            rows.len(),
+            unknown
+        );
+        for (raw, ms) in &talk_ms {
+            eprintln!(
+                "  Speaker {:>2}  {:>6.1}s  ({:.0}%)",
+                dense[raw],
+                *ms as f64 / 1000.0,
+                *ms as f64 / talk_ms.values().sum::<i64>() as f64 * 100.0
+            );
+        }
+        eprintln!("[rediar] preview (first 16 segments):");
+        for (seg, (_, a)) in attributed.iter().zip(&rows).take(16) {
+            let who = seg
+                .speaker_id
+                .map(|s| format!("Speaker {}", dense[&s]))
+                .unwrap_or_else(|| "?".into());
+            eprintln!(
+                "  {:>7.1}s  {:<10} {}",
+                a.start_ms as f64 / 1000.0,
+                who,
+                a.text.chars().take(48).collect::<String>()
+            );
+        }
+
+        // 6) Persist only when explicitly asked. Insert dense speakers, repoint segments, drop the
+        //    stale ones — all in one transaction so a failure leaves the old rows intact.
+        if std::env::var("HANDY_REDIARIZE_WRITE").as_deref() == Ok("1") {
+            let tx = conn.unchecked_transaction().unwrap();
+            let mut new_id: BTreeMap<i64, i64> = BTreeMap::new(); // raw diarizer id → new speaker row id
+            for (&raw, &n) in &dense {
+                tx.execute(
+                    "INSERT INTO speakers (history_id, label) VALUES (?1, ?2)",
+                    rusqlite::params![history_id, format!("Speaker {n}")],
+                )
+                .unwrap();
+                new_id.insert(raw, tx.last_insert_rowid());
+            }
+            for (seg, (seg_id, _)) in attributed.iter().zip(&rows) {
+                let sid = seg.speaker_id.map(|s| new_id[&s]);
+                tx.execute(
+                    "UPDATE transcription_segments SET speaker_id = ?1 WHERE id = ?2",
+                    rusqlite::params![sid, seg_id],
+                )
+                .unwrap();
+            }
+            let kept: Vec<i64> = new_id.values().copied().collect();
+            let placeholders = kept.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            tx.execute(
+                &format!(
+                    "DELETE FROM speakers WHERE history_id = ? AND id NOT IN ({placeholders})"
+                ),
+                rusqlite::params_from_iter(
+                    std::iter::once(history_id).chain(kept.iter().copied()),
+                ),
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            eprintln!("[rediar] WROTE {} speakers to history_id {history_id}", dense.len());
+        } else {
+            eprintln!("[rediar] read-only (set HANDY_REDIARIZE_WRITE=1 to persist)");
+        }
     }
 }
