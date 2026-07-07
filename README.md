@@ -11,7 +11,7 @@ Your Mac records the room, transcribes it, separates the speakers, and hands the
 ![macOS](https://img.shields.io/badge/macOS-14.4%2B-000000?logo=apple&logoColor=white)
 ![Built with](https://img.shields.io/badge/Rust%20%2B%20Tauri%202-24C8DB?logo=tauri&logoColor=white)
 ![On-device](https://img.shields.io/badge/100%25-on--device-4c1)
-![Tests](https://img.shields.io/badge/tests-102%20Rust%20%C2%B7%204%20MCP-2ea44f)
+![Tests](https://img.shields.io/badge/tests-216%20Rust%20%C2%B7%2014%20MCP-2ea44f)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 **[plaudy.vercel.app](https://plaudy.vercel.app)** · [Why](#why-plaudy) · [Features](#features) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Plaudy vs alternatives](#plaudy-vs-the-alternatives) · [Privacy](#privacy-the-whole-point) · [Roadmap](#status--roadmap)
@@ -96,7 +96,7 @@ bun tauri build                           # … or build Plaudy.app + Plaudy_*.d
 - **First launch:** grant **Microphone** and **Audio Recording** permission (no Screen Recording needed — the Process Tap uses the audio-capture TCC permission, so there's no purple banner).
 - **Record a meeting:** click the menu-bar **ear** 👂, or run the app and hit the record hero. Watch it wake while recording. Stop, and the speaker-attributed transcript appears in **History**.
 - **Summarize with Claude:** the local MCP server is registered in [`.mcp.json`](.mcp.json) — point Claude / Claude Code at this repo and ask it to summarize or search your sessions.
-- **Tests:** `cd handy/src-tauri && cargo test --lib` → 102 passed · `cd handy/mcp && bun test` → 4 pass.
+- **Tests:** `cd handy/src-tauri && cargo test --lib` → 216 passed · `cd handy/mcp && bun test` → 14 pass.
 
 > The current `.dmg` is **ad-hoc signed** (build-from-source or right-click → Open on first launch). A Developer-ID-signed & notarized release is on the roadmap. Full build notes: [handy/BUILD.md](handy/BUILD.md).
 
@@ -143,8 +143,9 @@ Want live transcription on Windows? Meetily. Want a Mac-native, agent-connected 
 
 **Early, but real** — core capture, diarization, and the MCP bridge are built and **validated live**.
 
-- ✅ Dual-stream meeting capture · on-device diarization · echo de-dup · History session cards · menu-bar ear · local MCP bridge · bundled offline models · 102 Rust + 4 MCP tests green.
-- 🧪 **Auto-capture** (per-process audio trigger) — works E2E, **opt-in / experimental** pending real-meeting hardening.
+- ✅ Dual-stream meeting capture · on-device diarization · echo de-dup · History session cards · menu-bar ear · local MCP bridge · bundled offline models · 216 Rust + 14 MCP tests green.
+- 🛡️ **Reliability hardening** (ongoing) — playing back a recording no longer self-triggers a capture; the voice trigger survives across sessions (a recorder-teardown deadlock is fixed); finalizing tolerates a recording deleted mid-transcription (no orphaned files, no resurrection); settings persist correctly.
+- 🧪 **Auto-capture** (per-process audio trigger) — works E2E, **opt-in / experimental**. Known limitation: apps that hold an always-on output stream (e.g. Electron editors) read as "audio playing", so trigger refinement (silence-aware detection / app-allowlist) is pending before it's on by default.
 - 🔜 Developer-ID signing + **notarized `.dmg`** · in-app search & export · "Enable diarization" one-tap download · broader i18n.
 - 🔭 iPhone capture (iPhone-as-mic + Mac-as-brain) — deferred (needs full Xcode).
 
