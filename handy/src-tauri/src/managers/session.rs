@@ -929,6 +929,9 @@ pub(crate) trait SessionSink {
         transcription_text: String,
         status: TranscriptionStatus,
     ) -> Result<()>;
+    /// Whether the row still exists — finalize uses this to treat a mid-flight deletion as a
+    /// benign discard rather than a hard failure.
+    fn entry_exists(&self, id: i64) -> Result<bool>;
 }
 
 impl SessionSink for HistoryManager {
@@ -946,6 +949,9 @@ impl SessionSink for HistoryManager {
     ) -> Result<()> {
         HistoryManager::update_transcription(self, id, transcription_text, None, None, status)
             .map(|_| ())
+    }
+    fn entry_exists(&self, id: i64) -> Result<bool> {
+        HistoryManager::entry_exists(self, id)
     }
 }
 
@@ -1028,6 +1034,19 @@ fn persist_session(
     }
 
     let (track_segments, full_texts, any_error) = transcribe_tracks(tm, diarizer, archived);
+
+    // The row can vanish while we transcribed (the user discarded the recording from History, or
+    // retention trimmed it — transcription of a long dual session takes minutes). That is a
+    // benign discard, not a failure: return Ok so finalize_session removes the PCMs and startup
+    // recovery can't resurrect the deleted recording. Writing segments/status to the gone row
+    // would otherwise FK-fail (WARN) then hard-error, orphaning the PCMs.
+    if !hm.entry_exists(entry.id)? {
+        info!(
+            "Session row {} deleted before finalize completed — discarding.",
+            entry.id
+        );
+        return Ok(());
+    }
 
     // Merge the tracks chronologically, then drop microphone "Me" segments that are just the
     // system audio echoing back through the speakers (acoustic bleed when not on headphones) —
@@ -1834,6 +1853,9 @@ mod tests {
         pending: Mutex<Vec<(String, EntrySource)>>,
         segments: Mutex<Vec<Vec<TimedSegment>>>,
         updates: Mutex<Vec<(String, TranscriptionStatus)>>,
+        /// When true, `entry_exists` reports the row as gone — simulates the user deleting the
+        /// recording mid-finalize.
+        row_deleted: bool,
     }
 
     impl SessionSink for RecordingSink {
@@ -1875,6 +1897,9 @@ mod tests {
                 .unwrap()
                 .push((transcription_text, status));
             Ok(())
+        }
+        fn entry_exists(&self, _id: i64) -> Result<bool> {
+            Ok(!self.row_deleted)
         }
     }
 
@@ -1938,6 +1963,40 @@ mod tests {
         assert!(
             tm.seen_sample_counts.lock().unwrap().is_empty(),
             "no transcription may be attempted without a model"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_row_deleted_mid_finalize_is_a_benign_discard_not_an_error() {
+        // The user deletes the recording from History while its (minutes-long) transcription
+        // runs. Finalize must treat the vanished row as a benign discard: return Ok (so the PCMs
+        // get cleaned and recovery can't resurrect it) and never write to the gone row.
+        let dir = scratch("row-deleted");
+        let tracks = vec![archived(
+            &dir,
+            "a.mic.session.pcm",
+            Source::Mic,
+            &[1000; 8],
+            0,
+        )];
+        let tm =
+            StubTranscriber::with_script(vec![Ok(("hello".into(), vec![asr_seg(0, 500, "hello")]))]);
+        let sink = RecordingSink {
+            row_deleted: true,
+            ..Default::default()
+        };
+
+        let r = persist_session(&tm, &sink, &no_model_diarizer(), &tracks, &dir.join("a.wav"));
+
+        assert!(r.is_ok(), "a row deleted mid-finalize must not surface as a failure");
+        assert!(
+            sink.segments.lock().unwrap().is_empty(),
+            "must not write segments to a vanished row (FK constraint would fail)"
+        );
+        assert!(
+            sink.updates.lock().unwrap().is_empty(),
+            "must not write status to a vanished row (not-found hard error)"
         );
         let _ = fs::remove_dir_all(&dir);
     }

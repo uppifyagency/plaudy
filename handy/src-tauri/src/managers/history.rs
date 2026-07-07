@@ -1464,6 +1464,19 @@ impl HistoryManager {
         Ok(count > 0)
     }
 
+    /// Does a history row with this id still exist? Lets finalize tell a benign mid-flight
+    /// discard (the user deleted the recording while it transcribed) from a real failure. A DB
+    /// error is surfaced, never swallowed as "gone".
+    pub fn entry_exists(&self, id: i64) -> Result<bool> {
+        let conn = self.get_connection()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM transcription_history WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     /// Ids the startup heal may retry — see the [`retryable_ids`] free function for the exact
     /// retryable/terminal boundary. Wraps it with this manager's recordings directory.
     pub fn retryable_entry_ids(&self) -> Result<Vec<i64>> {
