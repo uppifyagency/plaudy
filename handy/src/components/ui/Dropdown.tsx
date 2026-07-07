@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
 export interface DropdownOption {
@@ -30,12 +31,31 @@ export const Dropdown: React.FC<DropdownProps> = ({
   const resolvedPlaceholder = placeholder ?? t("common.selectOption");
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // Fixed-position rect for the portaled menu, measured from the trigger button. The menu lives
+  // in document.body (not inside the button's box) so no scroll/overflow/stacking ancestor can
+  // clip it or trap it behind the panel — the bug when it was `position: absolute` in-flow.
+  const [menuRect, setMenuRect] = useState<{
+    left: number;
+    top: number;
+    width: number;
+  } | null>(null);
+
+  const measure = () => {
+    const el = dropdownRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setMenuRect({ left: r.left, top: r.bottom + 4, width: r.width });
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      // The menu is portaled outside dropdownRef, so it must be checked separately — otherwise a
+      // click on an option reads as "outside", closes the menu, and the option's onClick is lost.
       if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(event.target as Node)
+        !dropdownRef.current?.contains(target) &&
+        !menuRef.current?.contains(target)
       ) {
         setIsOpen(false);
       }
@@ -43,6 +63,19 @@ export const Dropdown: React.FC<DropdownProps> = ({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // Keep the menu glued to the button while open, through panel scroll and window resize.
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    measure();
+    const onReflow = () => measure();
+    window.addEventListener("scroll", onReflow, true); // capture: catches scrolls in any ancestor
+    window.addEventListener("resize", onReflow);
+    return () => {
+      window.removeEventListener("scroll", onReflow, true);
+      window.removeEventListener("resize", onReflow);
+    };
+  }, [isOpen]);
 
   const selectedOption = options.find(
     (option) => option.value === selectedValue,
@@ -88,33 +121,45 @@ export const Dropdown: React.FC<DropdownProps> = ({
           />
         </svg>
       </button>
-      {isOpen && !disabled && (
-        <div className="glass-panel-strong absolute top-full left-0 right-0 mt-1 z-50 max-h-60 overflow-y-auto">
-          {options.length === 0 ? (
-            <div className="px-2 py-1 text-sm text-mid-gray">
-              {t("common.noOptionsFound")}
-            </div>
-          ) : (
-            options.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                className={`w-full px-2 py-1 text-sm text-start hover:bg-logo-primary/10 transition-colors duration-150 ${
-                  selectedValue === option.value
-                    ? "bg-logo-primary/20 font-semibold"
-                    : ""
-                } ${option.disabled ? "opacity-50 cursor-not-allowed" : ""}`}
-                onClick={() => handleSelect(option.value)}
-                disabled={option.disabled}
-              >
-                <span className="whitespace-normal break-words">
-                  {option.label}
-                </span>
-              </button>
-            ))
-          )}
-        </div>
-      )}
+      {isOpen &&
+        !disabled &&
+        menuRect &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="glass-panel-strong fixed z-50 max-h-60 overflow-y-auto"
+            style={{
+              left: menuRect.left,
+              top: menuRect.top,
+              width: menuRect.width,
+            }}
+          >
+            {options.length === 0 ? (
+              <div className="px-2 py-1 text-sm text-mid-gray">
+                {t("common.noOptionsFound")}
+              </div>
+            ) : (
+              options.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`w-full px-2 py-1 text-sm text-start hover:bg-logo-primary/10 transition-colors duration-150 ${
+                    selectedValue === option.value
+                      ? "bg-logo-primary/20 font-semibold"
+                      : ""
+                  } ${option.disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onClick={() => handleSelect(option.value)}
+                  disabled={option.disabled}
+                >
+                  <span className="whitespace-normal break-words">
+                    {option.label}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 };
