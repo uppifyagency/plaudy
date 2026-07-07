@@ -93,9 +93,9 @@ async changeOverlayPositionSetting(position: string) : Promise<Result<null, stri
     else return { status: "error", error: e  as any };
 }
 },
-async changeVoiceTriggerSetting(enabled: boolean) : Promise<Result<null, string>> {
+async changeDebugModeSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("change_voice_trigger_setting", { enabled }) };
+    return { status: "ok", data: await TAURI_INVOKE("change_debug_mode_setting", { enabled }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -109,9 +109,9 @@ async changeAutoCaptureSetting(enabled: boolean) : Promise<Result<null, string>>
     else return { status: "error", error: e  as any };
 }
 },
-async changeDebugModeSetting(enabled: boolean) : Promise<Result<null, string>> {
+async changeVoiceTriggerSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("change_debug_mode_setting", { enabled }) };
+    return { status: "ok", data: await TAURI_INVOKE("change_voice_trigger_setting", { enabled }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -835,6 +835,14 @@ async getHistoryEntries(cursor: number | null, limit: number | null) : Promise<R
 /**
  * Workstation search: literal substring match over transcript + title, newest first.
  */
+async searchHistoryEntries(query: string, limit: number | null) : Promise<Result<HistoryEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("search_history_entries", { query, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Batched list-view summaries (speakers + duration) for a page of entries — one IPC call per
  * History page instead of a full-segment fetch per row.
@@ -842,14 +850,6 @@ async getHistoryEntries(cursor: number | null, limit: number | null) : Promise<R
 async getSessionOverviews(ids: number[]) : Promise<Result<SessionOverview[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_session_overviews", { ids }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async searchHistoryEntries(query: string, limit: number | null) : Promise<Result<HistoryEntry[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("search_history_entries", { query, limit }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -954,7 +954,13 @@ export type AppSettings = { bindings: Partial<{ [key in string]: ShortcutBinding
  * own (opt-in; see managers/auto_capture.rs). The mic only ever joins a system-audio-triggered
  * session, never records on its own.
  */
-auto_capture_enabled?: boolean; voice_trigger_enabled?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number }
+auto_capture_enabled?: boolean; 
+/**
+ * Voice trigger for auto-capture: also start when speech is heard at the microphone.
+ * Separate opt-in because it holds the mic open while idle (permanent mic-in-use
+ * indicator) — call-only users shouldn't pay that.
+ */
+voice_trigger_enabled?: boolean; selected_microphone?: string | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; typing_tool?: TypingTool; external_script_path: string | null; custom_filler_words?: string[] | null; whisper_accelerator?: WhisperAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; whisper_gpu_device?: number; extra_recording_buffer_ms?: number }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { whisper: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
@@ -962,13 +968,13 @@ export type BindingResponse = { success: boolean; binding: ShortcutBinding | nul
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
 export type CustomSounds = { start: boolean; stop: boolean }
 export type EngineType = "Whisper" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
-export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
 /**
  * Which capture path produced a history row. Persisted at row creation (migration #7);
  * `Unknown` covers pre-migration rows (the `''` column default), for which the UI falls back
  * to its legacy label inference.
  */
 export type EntrySource = "dictation" | "mic" | "system" | "meeting" | "unknown"
+export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; status: TranscriptionStatus; source: EntrySource }
 export type HistoryUpdatePayload = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
 /**
@@ -987,11 +993,6 @@ export type ModelLoadStatus = { is_loaded: boolean; current_model: string | null
 export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "min_10" | "min_15" | "hour_1" | "sec_15"
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
 export type OverlayPosition = "none" | "top" | "bottom"
-/**
- * Lightweight per-entry segment summary for list views: distinct speaker labels (first-
- * appearance order) and the timeline duration.
- */
-export type SessionOverview = { history_id: number; speakers: string[]; duration_ms: number }
 export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
 export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_shift_v" | "external_script"
 export type PermissionAccess = "allowed" | "denied" | "unknown"
@@ -1003,6 +1004,12 @@ export type PersistedSegment = { start_ms: number; end_ms: number; speaker_label
 export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean }
 export type RecordingRetentionPeriod = "never" | "preserve_limit" | "days_3" | "weeks_2" | "months_3"
 export type SecretMap = Partial<{ [key in string]: string }>
+/**
+ * Lightweight per-entry segment summary for list views: distinct speaker labels (first-
+ * appearance order) and the timeline duration. One batched query per History page instead
+ * of a full-segment fetch per row (the old N+1 IPC).
+ */
+export type SessionOverview = { history_id: number; speakers: string[]; duration_ms: number }
 /**
  * Emitted on every session start/stop so the UI's live indicator stays correct
  * even when the state changes out-of-band — the `--toggle-session` CLI path,

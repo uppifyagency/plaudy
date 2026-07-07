@@ -37,6 +37,13 @@ pub struct CliArgs {
     #[arg(long)]
     pub toggle_meeting: bool,
 
+    /// Re-run transcription + diarization for one history entry, by id (sent to running
+    /// instance). Maintenance/repair: rebuilds a lost speaker timeline (e.g. a row recovered by
+    /// an older flat retry). Meeting/System rows are re-diarized to "Speaker N"; "Me" is not
+    /// recoverable from a mixed WAV (see commands::history::retranscribe_for_retry).
+    #[arg(long, value_name = "ID")]
+    pub rediarize: Option<i64>,
+
     /// Enable debug mode with verbose logging
     #[arg(long)]
     pub debug: bool,

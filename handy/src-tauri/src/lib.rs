@@ -494,6 +494,37 @@ fn show_main_window_command(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Extract the id from a forwarded `--rediarize <ID>` (or `--rediarize=<ID>`) invocation, if
+/// present. Mirrors how the other flags are matched off the raw arg vector in the
+/// single-instance handler (clap already validated it in the launching process).
+fn parse_rediarize_id(args: &[String]) -> Option<i64> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if let Some(v) = a.strip_prefix("--rediarize=") {
+            return v.parse().ok();
+        }
+        if a == "--rediarize" {
+            return it.next()?.parse().ok();
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod rediarize_arg_tests {
+    use super::parse_rediarize_id;
+    fn v(args: &[&str]) -> Option<i64> {
+        parse_rediarize_id(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+    #[test]
+    fn parses_both_forms_and_ignores_absence() {
+        assert_eq!(v(&["plaudy", "--rediarize", "21"]), Some(21));
+        assert_eq!(v(&["plaudy", "--rediarize=21"]), Some(21));
+        assert_eq!(v(&["plaudy", "--toggle-meeting"]), None);
+        assert_eq!(v(&["plaudy", "--rediarize", "notanumber"]), None);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(cli_args: CliArgs) {
     // Detect portable mode before anything else
@@ -708,6 +739,24 @@ pub fn run(cli_args: CliArgs) {
                     Ok(active) => log::info!("Meeting session toggled; active = {active}"),
                     Err(e) => log::error!("Failed to toggle meeting session: {e}"),
                 }
+            } else if let Some(id) = parse_rediarize_id(&args) {
+                // Maintenance: re-transcribe + re-diarize one entry through the real retry path.
+                let app = app.clone();
+                let history = app.state::<Arc<HistoryManager>>().inner().clone();
+                let transcription = app.state::<Arc<TranscriptionManager>>().inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    match commands::history::retry_entry_transcription(
+                        &app,
+                        &history,
+                        &transcription,
+                        id,
+                    )
+                    .await
+                    {
+                        Ok(()) => log::info!("Re-diarized history entry {id}"),
+                        Err(e) => log::error!("Failed to re-diarize entry {id}: {e}"),
+                    }
+                });
             } else {
                 show_main_window(app);
             }
