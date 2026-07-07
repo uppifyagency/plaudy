@@ -805,6 +805,11 @@ async isSessionActive() : Promise<boolean> {
 async sessionElapsedMs() : Promise<number | null> {
     return await TAURI_INVOKE("session_elapsed_ms");
 },
+/**
+ * Tell auto-capture that we're playing back one of our own recordings, so its audio isn't
+ * mistaken for external output and doesn't auto-trigger a capture of ourselves. The AudioPlayer
+ * calls this true on play, false on pause/ended.
+ */
 async setPlaybackActive(active: boolean) : Promise<void> {
     await TAURI_INVOKE("set_playback_active", { active });
 },
